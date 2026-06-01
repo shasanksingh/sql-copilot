@@ -1,0 +1,13 @@
+flask
+flask-cors
+pandas
+openpyxl
+httpx
+sqlglot
+langchain
+langchain-community
+langchain-openai
+faiss-cpu
+rank-bm25
+uvicorn
+asgiref

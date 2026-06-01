@@ -4,4 +4,5 @@ __pycache__/
 .env
 .faiss/
 *.db
+*.sqlite
 .DS_Store

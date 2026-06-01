@@ -155,7 +155,7 @@ GENAI_API_KEY=your_api_key
 # Running the Project
 
 ```bash
-python app.py
+uvicorn main:asgi_app --host 127.0.0.1 --port 5000
 ```
 
 Server starts at:
@@ -261,3 +261,154 @@ Only SELECT queries are allowed.
 
 ---
 
+# RL-Enhanced Agentic SQL Layer
+
+This project now includes an optional reinforcement-learning enhancement layer on top of the existing RAG Text-to-SQL pipeline. The original workflow remains intact; RL is used for feedback collection, explainability, policy-based optimization, and future PPO training.
+
+## Added Structure
+
+```bash
+rl/
+├── environment/sql_env.py      # SQLQueryOptimizationEnv and reward shaping
+├── agent/ppo_agent.py          # Stable-Baselines3 PPO wrapper
+├── training/train.py           # Training pipeline with checkpointing
+├── evaluation/evaluate.py      # Evaluation script
+└── models/                     # Saved models and checkpoints
+
+agentic/
+└── manager.py                  # Planner, retriever, generator, optimizer, validator, executor, explainer orchestration
+
+docs/
+└── rl_architecture.md          # Architecture diagram and RL workflow
+```
+
+## Feedback Storage
+
+Every successful SQL generation stores execution feedback in SQLite table `agent_feedback`:
+
+* `query`
+* `generated_sql`
+* `reward`
+* `execution_time`
+* `validation_status`
+* `timestamp`
+
+By default the feedback database is `sql_agent_feedback.sqlite`. Override it with:
+
+```bash
+AGENT_FEEDBACK_DB_PATH=path/to/feedback.sqlite
+```
+
+## Optional RL Dependencies
+
+```bash
+pip install -r requirements-rl.txt
+```
+
+## Train PPO
+
+```bash
+python -m rl.training.train --db-path path/to/app.sqlite --timesteps 10000
+```
+
+## Evaluate PPO
+
+```bash
+python -m rl.evaluation.evaluate --model-path rl/models/sql_ppo_agent.zip --db-path path/to/app.sqlite
+```
+
+## Dashboard
+
+Run Flask and open:
+
+```text
+http://127.0.0.1:5000/dashboard
+```
+
+Metrics API:
+
+```text
+http://127.0.0.1:5000/metrics
+```
+
+---
+
+# Final Run Steps Without API Key
+
+These steps keep the existing fallback behavior. You do not need `GENAI_API_KEY` or any remote LLM setting.
+
+## 1. Create and activate virtual environment
+
+```bash
+python -m venv venv
+venv\Scripts\activate
+```
+
+## 2. Install normal app dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+## 3. Optional: install RL/dashboard dependencies
+
+Use this only if you want PPO training, evaluation, or tests.
+
+```bash
+pip install -r requirements-rl.txt
+```
+
+## 4. Run the app with uvicorn in fallback mode
+
+Do not set `USE_REMOTE_LLM` and do not set `GENAI_API_KEY`.
+
+```bash
+uvicorn main:asgi_app --host 127.0.0.1 --port 5000
+```
+
+Open:
+
+```text
+http://127.0.0.1:5000
+```
+
+## 5. Try schema questions
+
+```text
+Show all employees
+Count tasks by status
+Show active projects
+List invoices by status
+Show payments received by client
+Show production deployments
+List active sprints by project
+Show departments and their managers
+```
+
+## 6. View RL feedback metrics
+
+After running a few SQL questions, open:
+
+```text
+http://127.0.0.1:5000/dashboard
+```
+
+API version:
+
+```text
+http://127.0.0.1:5000/metrics
+```
+
+## 7. Run tests
+
+```bash
+python -m pytest tests
+```
+
+## 8. Optional PPO training
+
+Only run this after installing `requirements-rl.txt`.
+
+```bash
+python -m rl.training.train --timesteps 10000
+```

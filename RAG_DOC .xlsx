@@ -46,3 +46,37 @@ bugs	Stores defects/issues reported during development or testing. This is criti
 bugs	Stores defects/issues reported during development or testing. This is critical for QA and product quality tracking.	status	ENUM	Bug status (open, in_progress, resolved, closed).
 bugs	Stores defects/issues reported during development or testing. This is critical for QA and product quality tracking.	description	TEXT	Detailed explanation of the issue, including steps to reproduce.
 bugs	Stores defects/issues reported during development or testing. This is critical for QA and product quality tracking.	created_at	TIMESTAMP	When the bug was reported.
+departments	Stores internal business units and engineering groups used for workforce reporting, ownership, and cost allocation.	department_id	INT (PK)	Unique identifier for each department.
+departments	Stores internal business units and engineering groups used for workforce reporting, ownership, and cost allocation.	department_name	VARCHAR(100)	Name of the department such as Engineering, QA, Product, DevOps, HR, or Finance.
+departments	Stores internal business units and engineering groups used for workforce reporting, ownership, and cost allocation.	manager_id	INT (FK)	References employees(employee_id). Employee responsible for managing the department.
+departments	Stores internal business units and engineering groups used for workforce reporting, ownership, and cost allocation.	location	VARCHAR(100)	Office location or region where the department primarily operates.
+departments	Stores internal business units and engineering groups used for workforce reporting, ownership, and cost allocation.	created_at	TIMESTAMP	When the department record was created.
+sprints	Stores agile sprint cycles for projects, including planned dates, sprint goals, and status for delivery tracking.	sprint_id	INT (PK)	Unique identifier for each sprint.
+sprints	Stores agile sprint cycles for projects, including planned dates, sprint goals, and status for delivery tracking.	project_id	INT (FK)	References projects(project_id). Project to which the sprint belongs.
+sprints	Stores agile sprint cycles for projects, including planned dates, sprint goals, and status for delivery tracking.	sprint_name	VARCHAR(150)	Name or label of the sprint, such as Sprint 12 or Release Hardening.
+sprints	Stores agile sprint cycles for projects, including planned dates, sprint goals, and status for delivery tracking.	start_date	DATE	Sprint start date.
+sprints	Stores agile sprint cycles for projects, including planned dates, sprint goals, and status for delivery tracking.	end_date	DATE	Sprint end date.
+sprints	Stores agile sprint cycles for projects, including planned dates, sprint goals, and status for delivery tracking.	status	ENUM	Sprint status (planned, active, completed, cancelled).
+sprints	Stores agile sprint cycles for projects, including planned dates, sprint goals, and status for delivery tracking.	goal	TEXT	Summary of the sprint objective or delivery goal.
+deployments	Tracks software deployments made for projects across environments, including version, status, and deployment owner.	deployment_id	INT (PK)	Unique identifier for each deployment event.
+deployments	Tracks software deployments made for projects across environments, including version, status, and deployment owner.	project_id	INT (FK)	References projects(project_id). Project that was deployed.
+deployments	Tracks software deployments made for projects across environments, including version, status, and deployment owner.	deployed_by	INT (FK)	References employees(employee_id). Employee who performed or approved the deployment.
+deployments	Tracks software deployments made for projects across environments, including version, status, and deployment owner.	environment	ENUM	Deployment environment (dev, qa, staging, production).
+deployments	Tracks software deployments made for projects across environments, including version, status, and deployment owner.	version	VARCHAR(80)	Application version, release tag, or build identifier.
+deployments	Tracks software deployments made for projects across environments, including version, status, and deployment owner.	status	ENUM	Deployment status (scheduled, success, failed, rolled_back).
+deployments	Tracks software deployments made for projects across environments, including version, status, and deployment owner.	deployed_at	TIMESTAMP	Date and time when deployment occurred.
+invoices	Stores client billing invoices generated for projects, including invoice amount, due date, and payment status.	invoice_id	INT (PK)	Unique identifier for each invoice.
+invoices	Stores client billing invoices generated for projects, including invoice amount, due date, and payment status.	client_id	INT (FK)	References clients(client_id). Client billed by the invoice.
+invoices	Stores client billing invoices generated for projects, including invoice amount, due date, and payment status.	project_id	INT (FK)	References projects(project_id). Project for which the invoice was generated.
+invoices	Stores client billing invoices generated for projects, including invoice amount, due date, and payment status.	invoice_number	VARCHAR(80)	Human-readable invoice number used in finance communication.
+invoices	Stores client billing invoices generated for projects, including invoice amount, due date, and payment status.	amount	DECIMAL(12,2)	Total invoice amount billed to the client.
+invoices	Stores client billing invoices generated for projects, including invoice amount, due date, and payment status.	status	ENUM	Invoice status (draft, sent, paid, overdue, cancelled).
+invoices	Stores client billing invoices generated for projects, including invoice amount, due date, and payment status.	issued_date	DATE	Date when the invoice was issued.
+invoices	Stores client billing invoices generated for projects, including invoice amount, due date, and payment status.	due_date	DATE	Date by which invoice payment is expected.
+payments	Stores payments received from clients against invoices for revenue tracking and collections reporting.	payment_id	INT (PK)	Unique identifier for each payment.
+payments	Stores payments received from clients against invoices for revenue tracking and collections reporting.	invoice_id	INT (FK)	References invoices(invoice_id). Invoice associated with the payment.
+payments	Stores payments received from clients against invoices for revenue tracking and collections reporting.	client_id	INT (FK)	References clients(client_id). Client who made the payment.
+payments	Stores payments received from clients against invoices for revenue tracking and collections reporting.	amount_paid	DECIMAL(12,2)	Amount received in this payment transaction.
+payments	Stores payments received from clients against invoices for revenue tracking and collections reporting.	payment_date	DATE	Date when the payment was received.
+payments	Stores payments received from clients against invoices for revenue tracking and collections reporting.	payment_method	ENUM	Payment method (bank_transfer, card, cheque, upi, cash).
+payments	Stores payments received from clients against invoices for revenue tracking and collections reporting.	status	ENUM	Payment status (received, failed, refunded, pending).

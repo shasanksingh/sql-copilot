@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 import sqlite3
 import webbrowser
 from collections import deque
@@ -10,6 +11,16 @@ from threading import Timer
 
 import pandas as pd
 from flask import Flask, jsonify, request, send_from_directory
+
+from rl.environment.sql_env import (
+    ACTION_NAMES,
+    SQLQueryOptimizationEnv,
+    SQLState,
+    compute_reward,
+    ensure_feedback_table,
+    execute_sql_for_stats,
+    store_experience,
+)
 
 try:
     import httpx
@@ -50,6 +61,11 @@ try:
 except ImportError:
     CORS = None
 
+try:
+    from asgiref.wsgi import WsgiToAsgi
+except ImportError:
+    WsgiToAsgi = None
+
 
  
 # 1. CONFIG
@@ -62,10 +78,15 @@ BASE_URL = os.getenv("GENAI_BASE_URL", "https://genailab.tcs.in")
 API_KEY = os.getenv("GENAI_API_KEY", "")
 
 SCHEMA_FILE = BASE_DIR / "RAG_DOC.xlsx"
+if not SCHEMA_FILE.exists() and (BASE_DIR / "RAG_DOC .xlsx").exists():
+    SCHEMA_FILE = BASE_DIR / "RAG_DOC .xlsx"
 FAISS_TABLE_INDEX_PATH = str(BASE_DIR / "faiss_table_index")
 FAISS_COL_INDEX_PATH = str(BASE_DIR / "faiss_col_index")
 
 DB_PATH = None
+FEEDBACK_DB_PATH = os.getenv("AGENT_FEEDBACK_DB_PATH", str(BASE_DIR / "sql_agent_feedback.sqlite"))
+RL_MODEL_PATH = os.getenv("RL_MODEL_PATH", str(BASE_DIR / "rl" / "models" / "sql_ppo_agent.zip"))
+RL_ENABLED = os.getenv("RL_ENABLED", "1").lower() in {"1", "true", "yes"}
 MAX_RETRIES = 3
 CONFIDENCE_THRESHOLD = 80
 
@@ -79,6 +100,8 @@ app = Flask(__name__, static_folder=str(BASE_DIR), static_url_path="")
 if CORS:
     CORS(app)
 
+asgi_app = WsgiToAsgi(app) if WsgiToAsgi else None
+
 
 @app.after_request
 def add_cors_headers(response):
@@ -90,6 +113,16 @@ def add_cors_headers(response):
 
 def log_step(message: str) -> None:
     print(message, flush=True)
+
+
+ensure_feedback_table(FEEDBACK_DB_PATH)
+
+try:
+    from rl.agent.ppo_agent import PPOAgent
+except ImportError:
+    PPOAgent = None
+
+ppo_agent = None
 
 
  
@@ -726,6 +759,103 @@ def execution_validate(sql: str) -> tuple[bool, str]:
         return True, ""
     except Exception as exc:
         return False, str(exc)
+
+
+def load_ppo_agent():
+    global ppo_agent
+    if ppo_agent is not None:
+        return ppo_agent
+    if not RL_ENABLED or PPOAgent is None or not Path(RL_MODEL_PATH).exists():
+        return None
+    try:
+        env = SQLQueryOptimizationEnv(
+            db_path=DB_PATH,
+            feedback_db_path=FEEDBACK_DB_PATH,
+            validator=validate_sql,
+        )
+        ppo_agent = PPOAgent.load(env, RL_MODEL_PATH)
+        log_step(f"[rl] Loaded PPO model from {RL_MODEL_PATH}")
+    except Exception as exc:
+        log_step(f"[rl] PPO model unavailable: {exc}")
+        ppo_agent = None
+    return ppo_agent
+
+
+def optimize_with_rl_feedback(query: str, sql: str, insights: dict) -> dict:
+    original_sql = sql
+    optimized_sql = sql
+    action_name = "keep_current_query"
+
+    agent = load_ppo_agent()
+    if agent is not None:
+        try:
+            env = SQLQueryOptimizationEnv(
+                db_path=DB_PATH,
+                feedback_db_path=FEEDBACK_DB_PATH,
+                validator=validate_sql,
+            )
+            obs, _ = env.reset(options={
+                "state": SQLState(
+                    user_query=query,
+                    schema_context="",
+                    generated_sql=sql,
+                )
+            })
+            action = agent.predict(obs)
+            _obs, _reward, _terminated, _truncated, info = env.step(action)
+            optimized_sql = info.get("optimized_sql", sql)
+            action_name = ACTION_NAMES.get(action, "unknown")
+        except Exception as exc:
+            log_step(f"[rl] Optimization skipped: {exc}")
+
+    is_valid, validation_message = validate_sql(optimized_sql)
+    stats = execute_sql_for_stats(DB_PATH, optimized_sql)
+    reward = compute_reward(is_valid, stats)
+    confidence = confidence_score(optimized_sql, is_valid, query)
+
+    store_experience(
+        FEEDBACK_DB_PATH,
+        query,
+        optimized_sql,
+        reward,
+        stats.execution_time,
+        validation_message,
+    )
+
+    if action_name == "keep_current_query" or original_sql == optimized_sql:
+        reasoning = (
+            "The RL feedback layer kept the generated SQL because it passed the "
+            "available validation and policy checks."
+        )
+    else:
+        reasoning = (
+            f"The RL optimizer selected {action_name.replace('_', ' ')} based on "
+            "policy feedback from prior executions."
+        )
+
+    updated_insights = dict(insights)
+    updated_insights.update({
+        "confidence": confidence,
+        "valid": is_valid,
+        "validation": validation_message,
+        "rl": {
+            "enabled": RL_ENABLED,
+            "model_loaded": agent is not None,
+            "action": action_name,
+            "original_sql": original_sql,
+            "optimized_sql": optimized_sql,
+            "reward_score": reward,
+            "confidence_score": confidence,
+            "execution_time": stats.execution_time,
+            "row_count": stats.row_count,
+            "optimization_reasoning": reasoning,
+        },
+    })
+
+    return {
+        "sql": optimized_sql,
+        "insights": updated_insights,
+    }
 
 
  
@@ -1824,7 +1954,21 @@ def generate_sql(
 
 @app.get("/")
 def home():
-    return send_from_directory(BASE_DIR, "index.html")
+    for filename in ("index.html", "index .html"):
+        if (BASE_DIR / filename).exists():
+            return send_from_directory(BASE_DIR, filename)
+    return jsonify({
+        "error": "Frontend file not found",
+        "expected": ["index.html", "index .html"],
+    }), 404
+
+
+@app.get("/favicon.ico")
+def favicon():
+    for filename in ("favicon.ico", "robot .jpg"):
+        if (BASE_DIR / filename).exists():
+            return send_from_directory(BASE_DIR, filename)
+    return ("", 204)
 
 
 @app.get("/health")
@@ -1882,17 +2026,118 @@ def sql_api():
         log_step("")
         log_step(f"[request] User query: {query}")
         result = generate_sql(query, session)
+        if str(result.get("sql", "")).lower().strip().startswith("select"):
+            result = optimize_with_rl_feedback(query, result["sql"], result["insights"])
 
         return jsonify({
             "query": query,
             "sql": result["sql"],
-            "message": "Generated using RAG schema retrieval.",
+            "message": "Generated using RAG schema retrieval with RL feedback.",
             "insights": result["insights"],
         })
 
     except Exception as exc:
         log_step(f"[error] {exc}")
         return jsonify({"error": str(exc)}), 500
+
+
+def load_feedback_metrics() -> dict:
+    ensure_feedback_table(FEEDBACK_DB_PATH)
+    with sqlite3.connect(FEEDBACK_DB_PATH) as conn:
+        rows = conn.execute(
+            """
+            SELECT query, generated_sql, reward, execution_time, validation_status, timestamp
+            FROM agent_feedback
+            ORDER BY timestamp ASC
+            """
+        ).fetchall()
+
+    if not rows:
+        return {
+            "total": 0,
+            "average_reward": 0,
+            "query_success_rate": 0,
+            "sql_accuracy": 0,
+            "average_latency": 0,
+            "trend": [],
+        }
+
+    rewards = [float(row[2]) for row in rows]
+    latencies = [float(row[3]) for row in rows]
+    successes = [1 for row in rows if str(row[4]).lower() == "valid" and float(row[2]) > 0]
+    valid_sql = [1 for row in rows if str(row[4]).lower() == "valid"]
+
+    return {
+        "total": len(rows),
+        "average_reward": round(sum(rewards) / len(rewards), 2),
+        "query_success_rate": round((len(successes) / len(rows)) * 100, 2),
+        "sql_accuracy": round((len(valid_sql) / len(rows)) * 100, 2),
+        "average_latency": round(sum(latencies) / len(latencies), 4),
+        "trend": [
+            {
+                "query": row[0],
+                "reward": float(row[2]),
+                "execution_time": float(row[3]),
+                "validation_status": row[4],
+                "timestamp": row[5],
+            }
+            for row in rows[-100:]
+        ],
+    }
+
+
+@app.get("/metrics")
+def metrics_api():
+    return jsonify(load_feedback_metrics())
+
+
+@app.get("/dashboard")
+def dashboard():
+    metrics = load_feedback_metrics()
+    trend_json = json.dumps(metrics["trend"])
+    return f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>SQL Copilot RL Dashboard</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    body {{ margin: 0; font-family: Arial, sans-serif; background: #f7f8fa; color: #18202a; }}
+    main {{ max-width: 1120px; margin: 0 auto; padding: 32px 20px; }}
+    h1 {{ font-size: 28px; margin: 0 0 20px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }}
+    .card {{ background: #fff; border: 1px solid #dde2ea; border-radius: 8px; padding: 16px; }}
+    .label {{ color: #5b6675; font-size: 13px; }}
+    .value {{ font-size: 26px; font-weight: 700; margin-top: 6px; }}
+    .chart {{ margin-top: 18px; background: #fff; border: 1px solid #dde2ea; border-radius: 8px; padding: 12px; }}
+  </style>
+</head>
+<body>
+<main>
+  <h1>RL Agent Metrics</h1>
+  <section class="grid">
+    <div class="card"><div class="label">Average reward</div><div class="value">{metrics["average_reward"]}</div></div>
+    <div class="card"><div class="label">Query success rate</div><div class="value">{metrics["query_success_rate"]}%</div></div>
+    <div class="card"><div class="label">SQL accuracy</div><div class="value">{metrics["sql_accuracy"]}%</div></div>
+    <div class="card"><div class="label">Average latency</div><div class="value">{metrics["average_latency"]}s</div></div>
+  </section>
+  <div id="reward-chart" class="chart"></div>
+  <div id="latency-chart" class="chart"></div>
+</main>
+<script>
+const trend = {trend_json};
+const x = trend.map((row, index) => row.timestamp || index);
+Plotly.newPlot('reward-chart', [{{
+  x, y: trend.map(row => row.reward), mode: 'lines+markers', name: 'Reward'
+}}], {{ title: 'Agent Reward Trend', margin: {{ t: 48, r: 24, b: 48, l: 48 }} }});
+Plotly.newPlot('latency-chart', [{{
+  x, y: trend.map(row => row.execution_time), mode: 'lines+markers', name: 'Latency'
+}}], {{ title: 'Execution Latency Trend', margin: {{ t: 48, r: 24, b: 48, l: 48 }} }});
+</script>
+</body>
+</html>
+"""
 
 
  
@@ -1902,4 +2147,12 @@ def sql_api():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
     Timer(1, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
-    app.run(host="0.0.0.0", port=port, debug=True)
+    try:
+        import uvicorn
+    except ImportError:
+        log_step("[server] uvicorn not installed; falling back to Flask development server")
+        app.run(host="0.0.0.0", port=port, debug=True)
+    else:
+        if asgi_app is None:
+            raise RuntimeError("asgiref is required to run this Flask app with uvicorn")
+        uvicorn.run(asgi_app, host="0.0.0.0", port=port)
