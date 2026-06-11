@@ -11,6 +11,7 @@ from threading import Timer
 
 import pandas as pd
 from flask import Flask, jsonify, request, send_from_directory
+from agentic.enterprise_copilot import EnterpriseSQLCopilot
 
 from rl.environment.sql_env import (
     ACTION_NAMES,
@@ -72,20 +73,23 @@ except ImportError:
  
 
 BASE_DIR = Path(__file__).resolve().parent
+ROOT_DIR = BASE_DIR.parent
+DATA_DIR = BASE_DIR / "data"
+STATIC_DIR = BASE_DIR / "static"
 
 USE_REMOTE_LLM = os.getenv("USE_REMOTE_LLM", "").lower() in {"1", "true", "yes"}
 BASE_URL = os.getenv("GENAI_BASE_URL", "https://genailab.tcs.in")
 API_KEY = os.getenv("GENAI_API_KEY", "")
 
-SCHEMA_FILE = BASE_DIR / "RAG_DOC.xlsx"
-if not SCHEMA_FILE.exists() and (BASE_DIR / "RAG_DOC .xlsx").exists():
-    SCHEMA_FILE = BASE_DIR / "RAG_DOC .xlsx"
-FAISS_TABLE_INDEX_PATH = str(BASE_DIR / "faiss_table_index")
-FAISS_COL_INDEX_PATH = str(BASE_DIR / "faiss_col_index")
+SCHEMA_FILE = Path(os.getenv("SCHEMA_FILE", str(DATA_DIR / "RAG_DOC.xlsx")))
+if not SCHEMA_FILE.exists() and (ROOT_DIR / "RAG_DOC .xlsx").exists():
+    SCHEMA_FILE = ROOT_DIR / "RAG_DOC .xlsx"
+FAISS_TABLE_INDEX_PATH = str(BASE_DIR / ".cache" / "faiss_table_index")
+FAISS_COL_INDEX_PATH = str(BASE_DIR / ".cache" / "faiss_col_index")
 
 DB_PATH = None
 FEEDBACK_DB_PATH = os.getenv("AGENT_FEEDBACK_DB_PATH", str(BASE_DIR / "sql_agent_feedback.sqlite"))
-RL_MODEL_PATH = os.getenv("RL_MODEL_PATH", str(BASE_DIR / "rl" / "models" / "sql_ppo_agent.zip"))
+RL_MODEL_PATH = os.getenv("RL_MODEL_PATH", str(ROOT_DIR / "rl" / "models" / "sql_ppo_agent.zip"))
 RL_ENABLED = os.getenv("RL_ENABLED", "1").lower() in {"1", "true", "yes"}
 MAX_RETRIES = 3
 CONFIDENCE_THRESHOLD = 80
@@ -96,7 +100,7 @@ http_client = (
     else None
 )
 
-app = Flask(__name__, static_folder=str(BASE_DIR), static_url_path="")
+app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="")
 if CORS:
     CORS(app)
 
@@ -123,6 +127,7 @@ except ImportError:
     PPOAgent = None
 
 ppo_agent = None
+enterprise_copilot = None
 
 
  
@@ -658,15 +663,20 @@ _FORBIDDEN_OPS = [
 
 def validate_sql(sql: str) -> tuple[bool, str]:
     sql_lower = sql.lower().strip()
+    if not sql_lower:
+        return False, "SQL is empty"
+    if not sql_lower.startswith("select"):
+        return False, "Only SELECT SQL can be generated. The system returned a clarification instead of executable SQL."
+    if ";" in sql_lower.rstrip(";"):
+        return False, "Multiple SQL statements are not allowed"
 
     for word in _FORBIDDEN_OPS:
         if re.search(rf"\b{word}\b", sql_lower):
             return False, f"Forbidden operation: '{word}'"
 
-    if not sql_lower.startswith("select"):
-        return False, "Query must begin with SELECT"
-
     used_tables, alias_map = extract_tables_and_aliases(sql)
+    if not used_tables:
+        return False, "SQL must include a FROM table"
 
     for table in used_tables:
         if table not in schema_tables:
@@ -680,10 +690,12 @@ def validate_sql(sql: str) -> tuple[bool, str]:
                 table_ref = col_expr.table.lower() if col_expr.table else None
 
                 if col_name == "*":
-                    continue
+                    return False, "Wildcard SELECT is not allowed; use explicit columns"
 
                 if table_ref:
                     real_table = alias_map.get(table_ref, table_ref)
+                    if real_table not in schema_columns:
+                        return False, f"Unknown table or alias reference: '{table_ref}'"
                     if real_table in schema_columns:
                         if col_name not in schema_columns[real_table]:
                             alias_note = (
@@ -1765,6 +1777,58 @@ def generate_sql_fallback(query: str, docs: list[Document] | None = None) -> str
     return _single_table_sql(query_text, primary_table)
 
 
+def get_enterprise_copilot() -> EnterpriseSQLCopilot:
+    global enterprise_copilot
+    if enterprise_copilot is None:
+        enterprise_copilot = EnterpriseSQLCopilot(
+            tables=schema_tables,
+            columns=schema_columns,
+            column_order=schema_column_order,
+            column_types=schema_column_types,
+            relationships=schema_graph,
+            table_hints=TABLE_QUERY_HINTS,
+            column_hints=COLUMN_QUERY_HINTS,
+            value_filters=VALUE_FILTERS,
+            aliases=TABLE_ALIASES,
+            defaults=DEFAULT_DISPLAY_COLUMNS,
+            labels=PRIMARY_LABEL_COLUMNS,
+            validator=validate_sql,
+            state_db_path=Path(FEEDBACK_DB_PATH),
+        )
+    return enterprise_copilot
+
+
+def enterprise_result_to_insights(result) -> dict[str, object]:
+    query_type = "Clarification" if result.clarification_required else detect_query_type(result.sql)
+    return {
+        "confidence": result.confidence,
+        "threshold": 70,
+        "valid": result.valid,
+        "validation": result.validation,
+        "source": "Enterprise local agent pipeline",
+        "attempts": 0,
+        "max_attempts": MAX_RETRIES,
+        "tables": result.selected_tables,
+        "columns": result.selected_columns,
+        "query_type": query_type,
+        "has_limit": bool(result.intent.get("limit")),
+        "summary": (
+            "Clarification required before SQL generation"
+            if result.clarification_required
+            else f"{query_type} query using {', '.join(result.selected_tables) or 'the available schema'}"
+        ),
+        "clarification_required": result.clarification_required,
+        "clarification_options": result.clarification_options,
+        "intent": result.intent,
+        "entities": result.entities,
+        "selected_tables": result.selected_tables,
+        "join_path": result.join_path,
+        "plan": result.plan,
+        "optimizations": result.optimizations,
+        "cache_hit": result.cache_hit,
+    }
+
+
  
 # 18. MAIN PIPELINE
  
@@ -1830,19 +1894,18 @@ def generate_sql(
     history_context = chat_session.get_context()
 
     if llm is None:
-        sql = generate_sql_fallback(user_query, docs)
-        log_step("[local] Generated SQL without an LLM or API key")
-        log_step(f"[fallback] SQL: {sql}")
-        chat_session.add(user_query, sql)
+        result = get_enterprise_copilot().run(user_query)
+        sql = result.sql
+        log_step("[local] Generated SQL with enterprise local agent pipeline")
+        log_step(f"[local] Confidence: {result.confidence}/100 | Valid: {result.valid}")
+        if result.clarification_required:
+            log_step(f"[local] Clarification options: {result.clarification_options}")
+        else:
+            log_step(f"[local] SQL: {sql}")
+            chat_session.add(user_query, sql)
         return {
             "sql": sql,
-            "insights": build_query_insights(
-                sql,
-                user_query,
-                source="Local rule-based engine",
-                attempts=0,
-                validation_note="Generated locally without an LLM or API key",
-            ),
+            "insights": enterprise_result_to_insights(result),
         }
 
     for attempt in range(1, max_retries + 1):
@@ -1954,20 +2017,33 @@ def generate_sql(
 
 @app.get("/")
 def home():
-    for filename in ("index.html", "index .html"):
-        if (BASE_DIR / filename).exists():
-            return send_from_directory(BASE_DIR, filename)
     return jsonify({
-        "error": "Frontend file not found",
-        "expected": ["index.html", "index .html"],
-    }), 404
+        "service": "SQL Copilot API",
+        "status": "ok",
+        "frontend": "Run the Next.js app in ../frontend",
+        "legacy_ui": "/legacy",
+        "endpoints": ["/health", "/sql", "/schema/relationships", "/schema/er", "/metrics"],
+    })
+
+
+@app.get("/legacy")
+def legacy_ui():
+    for filename in ("index.html", "index .html"):
+        if (STATIC_DIR / filename).exists():
+            return send_from_directory(STATIC_DIR, filename)
+    return jsonify({
+        "service": "SQL Copilot API",
+        "status": "ok",
+        "frontend": "Run the Next.js app in ../frontend",
+        "endpoints": ["/sql", "/schema/relationships", "/schema/er", "/metrics"],
+    })
 
 
 @app.get("/favicon.ico")
 def favicon():
-    for filename in ("favicon.ico", "robot .jpg"):
-        if (BASE_DIR / filename).exists():
-            return send_from_directory(BASE_DIR, filename)
+    for filename in ("favicon.ico", "robot.jpg", "robot .jpg"):
+        if (STATIC_DIR / filename).exists():
+            return send_from_directory(STATIC_DIR, filename)
     return ("", 204)
 
 
@@ -1977,6 +2053,22 @@ def health():
         "status": "ok",
         "schema_tables": sorted(schema_tables),
         "columns": len(column_documents),
+    })
+
+
+@app.get("/schema/relationships")
+def schema_relationships():
+    return jsonify({
+        "tables": sorted(schema_tables),
+        "relationships": get_enterprise_copilot().relationship_map(),
+    })
+
+
+@app.get("/schema/er")
+def schema_er_diagram():
+    return jsonify({
+        "format": "mermaid",
+        "diagram": get_enterprise_copilot().er_diagram(),
     })
 
 
@@ -2032,7 +2124,7 @@ def sql_api():
         return jsonify({
             "query": query,
             "sql": result["sql"],
-            "message": "Generated using RAG schema retrieval with RL feedback.",
+            "message": "Generated using LLM-free enterprise schema agents with validation and RL feedback.",
             "insights": result["insights"],
         })
 

@@ -1,0 +1,109 @@
+@import "reactflow/dist/style.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 222 47% 5%;
+  --foreground: 210 40% 98%;
+  --card: 222 47% 8%;
+  --muted: 215 20% 58%;
+  --primary: 187 92% 57%;
+  --border: 217 32% 18%;
+}
+
+.light {
+  --background: 210 40% 98%;
+  --foreground: 222 47% 11%;
+  --card: 0 0% 100%;
+  --muted: 215 16% 42%;
+  --primary: 187 92% 43%;
+  --border: 214 32% 86%;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-height: 100vh;
+  background:
+    linear-gradient(135deg, rgba(34, 211, 238, 0.14), transparent 34rem),
+    linear-gradient(215deg, rgba(99, 102, 241, 0.14), transparent 34rem),
+    hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+::selection {
+  background: rgba(34, 211, 238, 0.35);
+}
+
+.glass-panel {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(15, 23, 42, 0.64);
+  backdrop-filter: blur(22px);
+}
+
+.light body {
+  background:
+    linear-gradient(135deg, rgba(34, 211, 238, 0.12), transparent 32rem),
+    linear-gradient(215deg, rgba(99, 102, 241, 0.1), transparent 32rem),
+    #f8fafc;
+}
+
+.light .bg-slate-950\/55,
+.light .bg-slate-950\/60,
+.light .bg-slate-950\/70,
+.light .bg-slate-950\/78,
+.light .bg-slate-950\/80,
+.light .bg-slate-950\/90,
+.light .bg-slate-950\/92,
+.light .bg-slate-950\/95 {
+  background-color: rgba(255, 255, 255, 0.86);
+}
+
+.light .text-white {
+  color: #0f172a;
+}
+
+.light .text-slate-100,
+.light .text-slate-200,
+.light .text-slate-300,
+.light .text-slate-400 {
+  color: #334155;
+}
+
+.light .border-white\/10,
+.light .border-white\/12 {
+  border-color: rgba(15, 23, 42, 0.1);
+}
+
+.light .bg-white\/\[0\.04\],
+.light .bg-white\/\[0\.06\] {
+  background-color: rgba(255, 255, 255, 0.72);
+}
+
+.react-flow__attribution {
+  display: none;
+}
+
+.react-flow__edge-textbg {
+  fill: rgba(2, 6, 23, 0.9);
+}
+
+.react-flow__edge-text {
+  fill: #e2e8f0;
+  font-size: 11px;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
+}

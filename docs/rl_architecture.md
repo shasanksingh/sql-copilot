@@ -29,7 +29,7 @@ flowchart LR
 Install optional RL dependencies:
 
 ```bash
-pip install gymnasium stable-baselines3 plotly pytest
+pip install -r backend/requirements-rl.txt
 ```
 
 Train:
@@ -44,3 +44,19 @@ Evaluate:
 python -m rl.evaluation.evaluate --model-path rl/models/sql_ppo_agent.zip --db-path your.sqlite
 ```
 
+## Frontend Integration
+
+The redesigned Next.js dashboard consumes `GET /metrics` to show:
+
+- total validated query feedback rows
+- average reward
+- query success rate
+- SQL accuracy
+- average latency
+- recent reward/latency trend in Recharts
+
+The metrics database defaults to `backend/sql_agent_feedback.sqlite` and can still be overridden:
+
+```bash
+AGENT_FEEDBACK_DB_PATH=path/to/feedback.sqlite
+```

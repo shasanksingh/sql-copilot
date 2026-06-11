@@ -11,3 +11,5 @@ faiss-cpu
 rank-bm25
 uvicorn
 asgiref
+networkx
+rapidfuzz

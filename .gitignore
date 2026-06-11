@@ -3,6 +3,10 @@ __pycache__/
 *.pyc
 .env
 .faiss/
+backend/.cache/
+frontend/.next/
+frontend/node_modules/
+node_modules/
 *.db
 *.sqlite
 .DS_Store
