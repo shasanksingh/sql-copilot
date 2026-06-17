@@ -1,5 +1,7 @@
 flask
 flask-cors
+bcrypt
+PyJWT
 pandas
 openpyxl
 httpx

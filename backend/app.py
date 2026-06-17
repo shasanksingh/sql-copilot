@@ -4,14 +4,23 @@ import os
 import re
 import json
 import sqlite3
+import time
 import webbrowser
 from collections import deque
+from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 from threading import Timer
 
 import pandas as pd
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, g, jsonify, make_response, request, send_from_directory
 from agentic.enterprise_copilot import EnterpriseSQLCopilot
+try:
+    from backend.auth import AuthStore, SlidingWindowRateLimiter
+    from backend.synthetic_enterprise_data import SchemaRequestRepository, SyntheticEnterpriseDataEngine
+except ImportError:  # pragma: no cover - supports direct python backend/app.py execution
+    from auth import AuthStore, SlidingWindowRateLimiter
+    from synthetic_enterprise_data import SchemaRequestRepository, SyntheticEnterpriseDataEngine
 
 from rl.environment.sql_env import (
     ACTION_NAMES,
@@ -89,8 +98,26 @@ FAISS_COL_INDEX_PATH = str(BASE_DIR / ".cache" / "faiss_col_index")
 
 DB_PATH = None
 FEEDBACK_DB_PATH = os.getenv("AGENT_FEEDBACK_DB_PATH", str(BASE_DIR / "sql_agent_feedback.sqlite"))
+AUTH_DB_PATH = os.getenv("AUTH_DB_PATH", str(BASE_DIR / "sql_copilot.db"))
+AUTH_JWT_SECRET = os.getenv("AUTH_JWT_SECRET", "")
+SCHEMA_REQUEST_DB_PATH = os.getenv("SCHEMA_REQUEST_DB_PATH", AUTH_DB_PATH)
 RL_MODEL_PATH = os.getenv("RL_MODEL_PATH", str(ROOT_DIR / "rl" / "models" / "sql_ppo_agent.zip"))
 RL_ENABLED = os.getenv("RL_ENABLED", "1").lower() in {"1", "true", "yes"}
+APP_ENV = os.getenv("APP_ENV", "development").lower()
+FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://127.0.0.1:3000").rstrip("/")
+FRONTEND_ORIGINS = {
+    origin.strip().rstrip("/")
+    for origin in os.getenv("FRONTEND_ORIGINS", FRONTEND_ORIGIN).split(",")
+    if origin.strip()
+}
+if APP_ENV != "production":
+    FRONTEND_ORIGINS.update({
+        "http://127.0.0.1:3000",
+        "http://localhost:3000",
+    })
+COOKIE_SECURE = os.getenv("AUTH_COOKIE_SECURE", "1" if APP_ENV == "production" else "0").lower() in {"1", "true", "yes"}
+ACCESS_COOKIE = "sql_copilot_access"
+CSRF_COOKIE = "sql_copilot_csrf"
 MAX_RETRIES = 3
 CONFIDENCE_THRESHOLD = 80
 
@@ -102,16 +129,30 @@ http_client = (
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="")
 if CORS:
-    CORS(app)
+    CORS(
+        app,
+        origins=sorted(FRONTEND_ORIGINS),
+        supports_credentials=True,
+        allow_headers=["Content-Type", "X-CSRF-Token"],
+        methods=["GET", "POST", "PATCH", "OPTIONS"],
+    )
 
 asgi_app = WsgiToAsgi(app) if WsgiToAsgi else None
 
 
 @app.after_request
 def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    origin = request.headers.get("Origin")
+    if origin in FRONTEND_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers.add("Vary", "Origin")
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-CSRF-Token"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, OPTIONS"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     return response
 
 
@@ -120,6 +161,107 @@ def log_step(message: str) -> None:
 
 
 ensure_feedback_table(FEEDBACK_DB_PATH)
+auth_store = AuthStore(Path(AUTH_DB_PATH), signing_secret=AUTH_JWT_SECRET)
+schema_request_repo = SchemaRequestRepository(Path(SCHEMA_REQUEST_DB_PATH))
+synthetic_enterprise_engine = SyntheticEnterpriseDataEngine(
+    int(os.getenv("ENTERPRISE_SYNTHETIC_TABLES", "180"))
+)
+rate_limiter = SlidingWindowRateLimiter()
+
+if os.getenv("BOOTSTRAP_ADMIN_EMAIL") and os.getenv("BOOTSTRAP_ADMIN_PASSWORD"):
+    auth_store.bootstrap_admin(
+        os.getenv("BOOTSTRAP_ADMIN_NAME", "SQL Copilot Admin"),
+        os.getenv("BOOTSTRAP_ADMIN_EMAIL", ""),
+        os.getenv("BOOTSTRAP_ADMIN_PASSWORD", ""),
+    )
+
+
+PUBLIC_PATHS = {
+    "/",
+    "/health",
+    "/favicon.ico",
+    "/legacy",
+    "/auth/login",
+    "/auth/signup",
+    "/auth/forgot-password",
+    "/auth/reset-password",
+}
+
+
+def _client_ip() -> str:
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    return (forwarded.split(",", 1)[0].strip() or request.remote_addr or "")[:128]
+
+
+def _rate_limit(scope: str, limit: int, window_seconds: int):
+    key = f"{scope}:{_client_ip()}"
+    if rate_limiter.allow(key, limit, window_seconds, time.monotonic()):
+        return None
+    return jsonify({"error": "Too many requests. Please try again later."}), 429
+
+
+def _set_auth_cookies(response, session_data: dict[str, object]) -> None:
+    max_age = max(
+        0,
+        int((session_data["expires_at"] - datetime.now(timezone.utc)).total_seconds()),
+    )
+    response.set_cookie(
+        ACCESS_COOKIE,
+        str(session_data["token"]),
+        max_age=max_age,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite="Lax",
+        path="/",
+    )
+    response.set_cookie(
+        CSRF_COOKIE,
+        str(session_data["csrf_token"]),
+        max_age=max_age,
+        httponly=False,
+        secure=COOKIE_SECURE,
+        samesite="Lax",
+        path="/",
+    )
+
+
+def _clear_auth_cookies(response) -> None:
+    response.delete_cookie(ACCESS_COOKIE, path="/", secure=COOKIE_SECURE, samesite="Lax")
+    response.delete_cookie(CSRF_COOKIE, path="/", secure=COOKIE_SECURE, samesite="Lax")
+
+
+@app.before_request
+def authenticate_request():
+    if request.method == "OPTIONS" or request.path in PUBLIC_PATHS:
+        return None
+    token = request.cookies.get(ACCESS_COOKIE, "")
+    authorization = request.headers.get("Authorization", "")
+    if not token and authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+    validated = auth_store.validate_session(token) if token else None
+    if not validated:
+        response = jsonify({"error": "Authentication required.", "code": "AUTH_REQUIRED"})
+        response.status_code = 401
+        _clear_auth_cookies(response)
+        return response
+    g.current_user, g.auth_session = validated
+    if request.method in {"POST", "PATCH", "PUT", "DELETE"}:
+        header_token = request.headers.get("X-CSRF-Token", "")
+        cookie_token = request.cookies.get(CSRF_COOKIE, "")
+        expected = str(g.auth_session["csrf_token"])
+        if not header_token or header_token != cookie_token or header_token != expected:
+            return jsonify({"error": "CSRF validation failed.", "code": "CSRF_FAILED"}), 403
+    return None
+
+
+def admin_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if getattr(g, "current_user", {}).get("role") != "admin":
+            return jsonify({"error": "Administrator access required."}), 403
+        return view(*args, **kwargs)
+
+    return wrapped
 
 try:
     from rl.agent.ppo_agent import PPOAgent
@@ -176,6 +318,7 @@ schema_columns: dict[str, set[str]] = {}
 schema_column_order: dict[str, list[str]] = {}
 schema_column_types: dict[str, dict] = {}
 schema_graph: dict[str, list[tuple]] = {}
+virtual_schema_columns: set[tuple[str, str]] = set()
 
 table_documents: list[Document] = []
 column_documents: list[Document] = []
@@ -222,6 +365,36 @@ for table_name, group in df.groupby("Table Name"):
         ),
         metadata={"table": table_display},
     ))
+
+VIRTUAL_SCHEMA_EXTENSIONS = {
+    "clients": [
+        (
+            "tier",
+            "TEXT",
+            "Synthetic planning dimension for client service tier "
+            "(for example strategic, enterprise, growth, or standard).",
+        ),
+    ],
+}
+
+for table, extensions in VIRTUAL_SCHEMA_EXTENSIONS.items():
+    if table not in schema_tables:
+        continue
+    for column, data_type, description in extensions:
+        if column in schema_columns.get(table, set()):
+            continue
+        schema_columns[table].add(column)
+        schema_column_order[table].append(column)
+        schema_column_types[table][column] = data_type
+        virtual_schema_columns.add((table, column))
+        col_to_tables.setdefault(column, []).append(table)
+        column_documents.append(Document(
+            page_content=(
+                f"Table: {table} | Column: {column} ({data_type}) | "
+                f"Meaning: {description}"
+            ),
+            metadata={"table": table, "column": column, "source": "synthetic"},
+        ))
 
 try:
     xl = pd.ExcelFile(SCHEMA_FILE)
@@ -685,6 +858,11 @@ def validate_sql(sql: str) -> tuple[bool, str]:
     if sqlglot is not None:
         try:
             parsed = sqlglot.parse_one(sql)
+            selected_aliases = {
+                alias.alias.lower()
+                for alias in parsed.find_all(sqlglot.exp.Alias)
+                if alias.alias
+            }
             for col_expr in parsed.find_all(sqlglot.exp.Column):
                 col_name = col_expr.name.lower()
                 table_ref = col_expr.table.lower() if col_expr.table else None
@@ -707,6 +885,8 @@ def validate_sql(sql: str) -> tuple[bool, str]:
                                 f"{alias_note}"
                             )
                 else:
+                    if col_name in selected_aliases:
+                        continue
                     matches = [
                         table for table in used_tables
                         if col_name in schema_columns.get(table, set())
@@ -732,29 +912,19 @@ def validate_sql(sql: str) -> tuple[bool, str]:
 # 13. CONFIDENCE SCORING
  
 
+from agentic.confidence_coordinator import ConfidenceCoordinator
+
+
+_CONF_COORDINATOR = ConfidenceCoordinator()
+
+
 def confidence_score(sql: str, is_valid: bool, original_query: str) -> int:
-    if not is_valid:
-        return 0
+    """Backward-compatible wrapper that returns an int confidence score.
 
-    score = 80
-    q = original_query.lower()
-    s = sql.lower()
-
-    if any(w in q for w in ["count", "total", "how many"]) and "count(" in s:
-        score += 5
-    if any(w in q for w in ["group", "per", "each", "by department", "by category"]) and "group by" in s:
-        score += 5
-    if any(w in q for w in ["sort", "order", "top", "latest", "recent", "highest", "lowest"]) and "order by" in s:
-        score += 5
-    if any(w in q for w in ["join", "and their", "along with", "with its"]) and "join" in s:
-        score += 5
-
-    if "select *" in s and len(original_query.split()) > 5:
-        score -= 5
-    if len(sql.strip()) < 15:
-        score -= 30
-
-    return max(0, min(score, 100))
+    Uses the centralized ConfidenceCoordinator heuristic fallback.
+    """
+    breakdown = _CONF_COORDINATOR.compute_from_sql_heuristic(sql, is_valid, original_query)
+    return int(round(breakdown.get("overall", 0.0)))
 
 
  
@@ -967,6 +1137,11 @@ TABLE_ALIASES = {
     "tasks": "t",
     "time_logs": "tl",
     "bugs": "b",
+    "departments": "d",
+    "invoices": "i",
+    "payments": "pay",
+    "sprints": "s",
+    "deployments": "dep",
 }
 
 TABLE_QUERY_HINTS = {
@@ -977,7 +1152,7 @@ TABLE_QUERY_HINTS = {
     },
     "clients": {
         "client", "clients", "customer", "customers", "industry",
-        "organization", "contact",
+        "organization", "contact", "tier", "segment",
     },
     "projects": {
         "project", "projects", "budget", "start date", "end date",
@@ -999,16 +1174,40 @@ TABLE_QUERY_HINTS = {
         "bug", "bugs", "defect", "defects", "issue", "issues", "severity",
         "reported", "reporter", "resolved", "closed", "blocker",
     },
+    "payments": {
+        "payment", "payments", "paid", "revenue", "cash", "receipt",
+        "payment date", "payment method",
+    },
+    "invoices": {
+        "invoice", "invoices", "billing", "billed", "revenue", "amount",
+        "issued date", "due date",
+    },
+    "departments": {
+        "department", "departments", "division", "location",
+    },
+    "sprints": {
+        "sprint", "sprints", "iteration", "iterations", "goal",
+        "start date", "end date",
+    },
+    "deployments": {
+        "deployment", "deployments", "release", "releases", "environment",
+        "version", "deployed", "production", "staging",
+    },
 }
 
 DEFAULT_DISPLAY_COLUMNS = {
     "employees": ["employee_id", "full_name", "email", "role", "department", "status"],
-    "clients": ["client_id", "client_name", "contact_email", "industry", "created_at"],
+    "clients": ["client_id", "client_name", "tier", "contact_email", "industry", "created_at"],
     "projects": ["project_id", "project_name", "client_id", "status", "budget", "start_date", "end_date"],
     "project_team": ["id", "project_id", "employee_id", "role_in_project", "assigned_at"],
     "tasks": ["task_id", "title", "project_id", "assigned_to", "priority", "status", "due_date"],
     "time_logs": ["log_id", "task_id", "employee_id", "hours_spent", "log_date", "remarks"],
     "bugs": ["bug_id", "project_id", "reported_by", "assigned_to", "severity", "status", "created_at"],
+    "payments": ["payment_id", "invoice_id", "client_id", "amount_paid", "payment_date", "payment_method", "status"],
+    "invoices": ["invoice_id", "client_id", "project_id", "invoice_number", "amount", "status", "issued_date", "due_date"],
+    "departments": ["department_id", "department_name", "manager_id", "location", "created_at"],
+    "sprints": ["sprint_id", "project_id", "sprint_name", "start_date", "end_date", "status", "goal"],
+    "deployments": ["deployment_id", "project_id", "deployed_by", "environment", "version", "status", "deployed_at"],
 }
 
 PRIMARY_LABEL_COLUMNS = {
@@ -1019,6 +1218,8 @@ PRIMARY_LABEL_COLUMNS = {
     "time_logs": "log_id",
     "bugs": "bug_id",
     "project_team": "id",
+    "sprints": "sprint_name",
+    "deployments": "version",
 }
 
 COLUMN_QUERY_HINTS = {
@@ -1036,6 +1237,7 @@ COLUMN_QUERY_HINTS = {
         "client_name": {"name", "names", "client name", "client names"},
         "contact_email": {"contact email", "email", "mail"},
         "industry": {"industry", "domain"},
+        "tier": {"tier", "client tier", "customer tier", "segment", "client segment"},
         "created_at": {"created", "onboarded", "created at"},
     },
     "projects": {
@@ -1079,6 +1281,50 @@ COLUMN_QUERY_HINTS = {
         "status": {"status", "open", "in progress", "resolved", "closed"},
         "description": {"description", "details"},
         "created_at": {"created", "reported", "created at"},
+    },
+    "payments": {
+        "payment_id": {"payment id"},
+        "invoice_id": {"invoice", "invoice id"},
+        "client_id": {"client", "client id"},
+        "amount_paid": {"amount paid", "paid amount", "revenue", "payment amount"},
+        "payment_date": {"payment date", "paid date", "month", "quarter"},
+        "payment_method": {"payment method", "method"},
+        "status": {"status"},
+    },
+    "invoices": {
+        "invoice_id": {"invoice id"},
+        "client_id": {"client", "client id"},
+        "project_id": {"project", "project id"},
+        "invoice_number": {"invoice number"},
+        "amount": {"invoice amount", "billed amount", "revenue"},
+        "status": {"status"},
+        "issued_date": {"issued date", "invoice date", "month", "quarter"},
+        "due_date": {"due date", "deadline"},
+    },
+    "departments": {
+        "department_id": {"department id"},
+        "department_name": {"department", "department name", "division"},
+        "manager_id": {"manager", "manager id"},
+        "location": {"location"},
+        "created_at": {"created", "created at"},
+    },
+    "sprints": {
+        "sprint_id": {"sprint id"},
+        "project_id": {"project", "project id"},
+        "sprint_name": {"sprint", "sprint name", "iteration"},
+        "start_date": {"start", "start date"},
+        "end_date": {"end", "end date", "ending"},
+        "status": {"status", "active", "completed"},
+        "goal": {"goal", "objective"},
+    },
+    "deployments": {
+        "deployment_id": {"deployment id"},
+        "project_id": {"project", "project id"},
+        "deployed_by": {"deployed by", "releaser", "employee"},
+        "environment": {"environment", "production", "staging"},
+        "version": {"version", "release"},
+        "status": {"status", "successful", "failed"},
+        "deployed_at": {"deployed", "deployment date", "released"},
     },
 }
 
@@ -1151,6 +1397,19 @@ VALUE_FILTERS = {
             "closed": "closed",
         },
     },
+    "sprints": {
+        "status": {
+            "active": "active",
+            "completed": "completed",
+            "complete": "completed",
+        },
+    },
+    "deployments": {
+        "status": {
+            "successful": "successful",
+            "failed": "failed",
+        },
+    },
 }
 
 DATE_ORDER_COLUMNS = {
@@ -1161,6 +1420,8 @@ DATE_ORDER_COLUMNS = {
     "time_logs": "log_date",
     "bugs": "created_at",
     "project_team": "assigned_at",
+    "sprints": "start_date",
+    "deployments": "deployed_at",
 }
 
 
@@ -1800,6 +2061,17 @@ def get_enterprise_copilot() -> EnterpriseSQLCopilot:
 
 def enterprise_result_to_insights(result) -> dict[str, object]:
     query_type = "Clarification" if result.clarification_required else detect_query_type(result.sql)
+    index_suggestions = [
+        item.removeprefix("Index suggested: ").removeprefix("Index suggested for filter: ")
+        for item in result.optimizations
+        if item.lower().startswith("index suggested")
+    ]
+    execution_plan = [
+        f"Scan {result.selected_tables[0]}" if result.selected_tables else "No executable plan",
+        *[f"Join {item}" for item in result.join_path],
+        "Apply read-only validation",
+        "Return projected columns",
+    ]
     return {
         "confidence": result.confidence,
         "threshold": 70,
@@ -1825,6 +2097,20 @@ def enterprise_result_to_insights(result) -> dict[str, object]:
         "join_path": result.join_path,
         "plan": result.plan,
         "optimizations": result.optimizations,
+        "optimized_sql": result.sql,
+        "optimization_explanation": (
+            result.optimizations
+            or ["Planner output is already explicit and read-only; no SQL rewrite was required."]
+        ),
+        "execution_plan": execution_plan,
+        "cost_reduction_percent": 0,
+        "index_suggestions": index_suggestions,
+        "confidence_breakdown": result.confidence_breakdown,
+        "coverage_report": result.coverage_report,
+        "agent_telemetry": result.agent_telemetry,
+        "execution_trace": result.execution_trace,
+        "runtime_metrics": result.runtime_metrics,
+        "benchmark_record": result.benchmark_record,
         "cache_hit": result.cache_hit,
     }
 
@@ -2015,6 +2301,149 @@ def generate_sql(
 # 18. ROUTES
  
 
+@app.post("/auth/signup")
+def auth_signup():
+    limited = _rate_limit("signup", 5, 3600)
+    if limited:
+        return limited
+    payload = request.get_json(silent=True) or {}
+    try:
+        user = auth_store.create_user(
+            str(payload.get("name") or ""),
+            str(payload.get("email") or ""),
+            str(payload.get("password") or ""),
+        )
+    except ValueError as exc:
+        auth_store.log(
+            "auth_logs",
+            "signup_rejected",
+            level="warning",
+            details={"email": str(payload.get("email") or "")[:254], "reason": str(exc)},
+            ip_address=_client_ip(),
+        )
+        return jsonify({"error": str(exc)}), 400
+    session_data = auth_store.issue_session(
+        user,
+        bool(payload.get("remember")),
+        _client_ip(),
+        request.headers.get("User-Agent", ""),
+    )
+    auth_store.log(
+        "auth_logs",
+        "signup_succeeded",
+        user_id=user["id"],
+        details={"role": user["role"]},
+        ip_address=_client_ip(),
+    )
+    response = make_response(jsonify({"user": user, "csrf_token": session_data["csrf_token"]}), 201)
+    _set_auth_cookies(response, session_data)
+    return response
+
+
+@app.post("/auth/login")
+def auth_login():
+    limited = _rate_limit("login", 8, 300)
+    if limited:
+        return limited
+    payload = request.get_json(silent=True) or {}
+    user = auth_store.authenticate(
+        str(payload.get("email") or ""),
+        str(payload.get("password") or ""),
+    )
+    if not user:
+        auth_store.log(
+            "auth_logs",
+            "login_failed",
+            level="warning",
+            details={"email": str(payload.get("email") or "")[:254]},
+            ip_address=_client_ip(),
+        )
+        return jsonify({"error": "Invalid email or password."}), 401
+    session_data = auth_store.issue_session(
+        user,
+        bool(payload.get("remember")),
+        _client_ip(),
+        request.headers.get("User-Agent", ""),
+    )
+    auth_store.log(
+        "session_logs",
+        "session_created",
+        user_id=user["id"],
+        details={"remember": bool(payload.get("remember"))},
+        ip_address=_client_ip(),
+    )
+    response = make_response(jsonify({"user": user, "csrf_token": session_data["csrf_token"]}))
+    _set_auth_cookies(response, session_data)
+    return response
+
+
+@app.get("/auth/me")
+def auth_me():
+    return jsonify({"user": g.current_user, "expires_at": g.auth_session["expires_at"]})
+
+
+@app.post("/auth/logout")
+def auth_logout():
+    auth_store.revoke_session(str(g.auth_session["token_id"]))
+    auth_store.log(
+        "session_logs",
+        "session_revoked",
+        user_id=g.current_user["id"],
+        ip_address=_client_ip(),
+    )
+    response = make_response(jsonify({"status": "logged_out"}))
+    _clear_auth_cookies(response)
+    return response
+
+
+@app.post("/auth/forgot-password")
+def auth_forgot_password():
+    limited = _rate_limit("forgot_password", 5, 3600)
+    if limited:
+        return limited
+    payload = request.get_json(silent=True) or {}
+    token = auth_store.create_password_reset(str(payload.get("email") or ""))
+    response: dict[str, object] = {
+        "message": "If the account exists, a password reset request has been created."
+    }
+    expose_token = os.getenv(
+        "AUTH_EXPOSE_RESET_TOKEN",
+        "1" if APP_ENV != "production" else "0",
+    ).lower() in {"1", "true", "yes"}
+    if token and expose_token:
+        response["reset_token"] = token
+    auth_store.log(
+        "auth_logs",
+        "password_reset_requested",
+        details={"account_found": bool(token)},
+        ip_address=_client_ip(),
+    )
+    return jsonify(response)
+
+
+@app.post("/auth/reset-password")
+def auth_reset_password():
+    limited = _rate_limit("reset_password", 8, 3600)
+    if limited:
+        return limited
+    payload = request.get_json(silent=True) or {}
+    try:
+        reset = auth_store.reset_password(
+            str(payload.get("token") or ""),
+            str(payload.get("password") or ""),
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if not reset:
+        return jsonify({"error": "Reset token is invalid or expired."}), 400
+    auth_store.log(
+        "auth_logs",
+        "password_reset_succeeded",
+        ip_address=_client_ip(),
+    )
+    return jsonify({"message": "Password updated. Sign in with your new password."})
+
+
 @app.get("/")
 def home():
     return jsonify({
@@ -2022,7 +2451,20 @@ def home():
         "status": "ok",
         "frontend": "Run the Next.js app in ../frontend",
         "legacy_ui": "/legacy",
-        "endpoints": ["/health", "/sql", "/schema/relationships", "/schema/er", "/metrics"],
+        "endpoints": [
+            "/health",
+            "/auth/login",
+            "/auth/signup",
+            "/auth/me",
+            "/sql",
+            "/schema/catalog",
+            "/schema/relationships",
+            "/schema/er",
+            "/enterprise-schema",
+            "/schema-request",
+            "/schema-requests",
+            "/metrics",
+        ],
     })
 
 
@@ -2056,6 +2498,50 @@ def health():
     })
 
 
+@app.get("/schema/catalog")
+def schema_catalog():
+    relationships = get_enterprise_copilot().relationship_map()
+    tables = []
+    for table in sorted(schema_tables):
+        columns = [
+            {
+                "name": column,
+                "data_type": str(schema_column_types.get(table, {}).get(column, "")),
+                "is_pk": column.endswith("_id") and column == schema_column_order.get(table, [""])[0],
+                "is_fk": any(rel[0] == column for rel in schema_graph.get(table, [])),
+                "is_virtual": (table, column) in virtual_schema_columns,
+            }
+            for column in schema_column_order.get(table, [])
+        ]
+        direct_relationships = relationships.get(table, [])
+        tables.append({
+            "name": table,
+            "domain": "Core Copilot Schema",
+            "purpose": "Excel-backed schema table used by the active SQL copilot.",
+            "row_count": "live",
+            "columns": columns,
+            "relationships": direct_relationships,
+            "indexes": [
+                column["name"]
+                for column in columns
+                if column["is_pk"] or column["is_fk"] or column["name"] in {"status", "created_at"}
+            ],
+            "last_updated": "2026-06-12",
+        })
+    enterprise_catalog = synthetic_enterprise_engine.generate_catalog()
+    return jsonify({
+        "summary": {
+            "tables_count": len(tables),
+            "relationships_count": sum(len(items) for items in relationships.values()),
+            "enterprise_virtual_tables": enterprise_catalog["summary"]["tables_count"],
+            "enterprise_virtual_relationships": enterprise_catalog["summary"]["relationships_count"],
+        },
+        "tables": tables,
+        "relationships": relationships,
+        "enterprise_preview": enterprise_catalog["summary"],
+    })
+
+
 @app.get("/schema/relationships")
 def schema_relationships():
     return jsonify({
@@ -2070,6 +2556,122 @@ def schema_er_diagram():
         "format": "mermaid",
         "diagram": get_enterprise_copilot().er_diagram(),
     })
+
+
+@app.get("/enterprise-schema")
+def enterprise_schema():
+    return jsonify(synthetic_enterprise_engine.generate_catalog())
+
+
+@app.route("/schema-request", methods=["POST", "OPTIONS"])
+def schema_request_api():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    payload = request.form.to_dict() if request.form else (request.get_json(silent=True) or {})
+    payload["requested_by_user_id"] = g.current_user["id"]
+    upload = request.files.get("file")
+    if upload and upload.filename:
+        suffix = Path(upload.filename).suffix.lower()
+        if suffix not in {".csv", ".json"}:
+            return jsonify({"error": "Only CSV and JSON uploads are supported."}), 400
+        content = upload.read(1_000_001)
+        if len(content) > 1_000_000:
+            return jsonify({"error": "Upload must be 1 MB or smaller."}), 400
+        payload["attachment_name"] = Path(upload.filename).name[:255]
+        payload["attachment_content"] = content.decode("utf-8", errors="replace")
+        payload["request_kind"] = "csv_upload" if suffix == ".csv" else "json_upload"
+    if isinstance(payload.get("columns"), str):
+        payload["columns"] = [
+            item.strip() for item in str(payload["columns"]).split(",") if item.strip()
+        ]
+    if not any(payload.get(key) for key in ("table_name", "requested_tables", "business_purpose", "user_notes")):
+        return jsonify({"error": "table_name, requested_tables, business_purpose, or user_notes is required"}), 400
+    created = schema_request_repo.create(payload)
+    auth_store.log(
+        "feedback_logs",
+        "schema_request_created",
+        user_id=g.current_user["id"],
+        details={"request_id": created.get("request_id"), "kind": payload.get("request_kind", "table")},
+        ip_address=_client_ip(),
+    )
+    return jsonify(created), 201
+
+
+@app.get("/schema-requests")
+def schema_requests_api():
+    status = request.args.get("status")
+    user_id = None if g.current_user["role"] == "admin" else g.current_user["id"]
+    return jsonify({
+        "requests": schema_request_repo.list(status=status, user_id=user_id),
+        "analytics": schema_request_repo.analytics(user_id=user_id),
+    })
+
+
+@app.patch("/schema-request/<int:request_id>/status")
+@admin_required
+def schema_request_status_api(request_id: int):
+    payload = request.get_json(silent=True) or {}
+    status = str(payload.get("status") or "").strip().lower()
+    if status not in {"pending", "approved", "generated", "rejected"}:
+        return jsonify({"error": "status must be pending, approved, generated, or rejected"}), 400
+    updated = schema_request_repo.update_status(request_id, status)
+    if not updated:
+        return jsonify({"error": "schema request not found"}), 404
+    auth_store.log(
+        "audit_logs",
+        "schema_request_status_updated",
+        user_id=g.current_user["id"],
+        details={"request_id": request_id, "status": status},
+        ip_address=_client_ip(),
+    )
+    return jsonify(updated)
+
+
+@app.post("/feedback")
+def feedback_api():
+    payload = request.get_json(silent=True) or {}
+    try:
+        created = auth_store.add_feedback(
+            g.current_user["id"],
+            str(payload.get("category") or "general"),
+            str(payload.get("message") or ""),
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    auth_store.log(
+        "feedback_logs",
+        "feedback_created",
+        user_id=g.current_user["id"],
+        details={"feedback_id": created.get("id"), "category": created.get("category")},
+        ip_address=_client_ip(),
+    )
+    return jsonify(created), 201
+
+
+@app.get("/feedback")
+@admin_required
+def feedback_list_api():
+    return jsonify({"feedback": auth_store.list_feedback()})
+
+
+@app.post("/logs/frontend")
+def frontend_log_api():
+    payload = request.get_json(silent=True) or {}
+    level = str(payload.get("level") or "error").lower()
+    table = "ui_errors" if level == "error" else "frontend_logs"
+    auth_store.log(
+        table,
+        str(payload.get("event") or "frontend_event"),
+        user_id=g.current_user["id"],
+        level=level,
+        details={
+            "message": str(payload.get("message") or "")[:5000],
+            "path": str(payload.get("path") or "")[:500],
+            "stack": str(payload.get("stack") or "")[:10_000],
+        },
+        ip_address=_client_ip(),
+    )
+    return ("", 204)
 
 
 @app.route("/sql", methods=["GET", "POST", "OPTIONS"])
@@ -2133,6 +2735,74 @@ def sql_api():
         return jsonify({"error": str(exc)}), 500
 
 
+def load_agent_telemetry_metrics() -> dict:
+    with sqlite3.connect(FEEDBACK_DB_PATH) as conn:
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_telemetry'"
+        ).fetchone()
+        if not exists:
+            return {
+                "intent_accuracy": 0,
+                "planner_accuracy": 0,
+                "validation_accuracy": 0,
+                "optimization_accuracy": 0,
+                "coverage_score": 0,
+                "missing_concepts": [],
+                "trend": [],
+            }
+        rows = conn.execute(
+            """
+            SELECT query, confidence, valid, intent_score, entity_score, join_score,
+                   column_score, aggregation_score, semantic_score, missing_concepts, timestamp
+            FROM agent_telemetry
+            ORDER BY timestamp ASC
+            """
+        ).fetchall()
+    if not rows:
+        return {
+            "intent_accuracy": 0,
+            "planner_accuracy": 0,
+            "validation_accuracy": 0,
+            "optimization_accuracy": 0,
+            "coverage_score": 0,
+            "missing_concepts": [],
+            "trend": [],
+        }
+
+    def avg(index: int) -> float:
+        return round(sum(float(row[index]) for row in rows) / len(rows), 2)
+
+    missing: list[str] = []
+    for row in rows[-25:]:
+        try:
+            missing.extend(json.loads(row[9] or "[]"))
+        except json.JSONDecodeError:
+            pass
+    return {
+        "intent_accuracy": avg(3),
+        "planner_accuracy": avg(4),
+        "validation_accuracy": avg(8),
+        "optimization_accuracy": round((sum(1 for row in rows if row[2]) / len(rows)) * 100, 2),
+        "coverage_score": avg(1),
+        "missing_concepts": sorted(set(missing))[:20],
+        "trend": [
+            {
+                "query": row[0],
+                "confidence": float(row[1]),
+                "valid": bool(row[2]),
+                "intent_score": float(row[3]),
+                "entity_score": float(row[4]),
+                "join_score": float(row[5]),
+                "column_score": float(row[6]),
+                "aggregation_score": float(row[7]),
+                "semantic_score": float(row[8]),
+                "timestamp": row[10],
+            }
+            for row in rows[-100:]
+        ],
+    }
+
+
 def load_feedback_metrics() -> dict:
     ensure_feedback_table(FEEDBACK_DB_PATH)
     with sqlite3.connect(FEEDBACK_DB_PATH) as conn:
@@ -2145,6 +2815,7 @@ def load_feedback_metrics() -> dict:
         ).fetchall()
 
     if not rows:
+        telemetry = load_agent_telemetry_metrics()
         return {
             "total": 0,
             "average_reward": 0,
@@ -2152,29 +2823,89 @@ def load_feedback_metrics() -> dict:
             "sql_accuracy": 0,
             "average_latency": 0,
             "trend": [],
+            "planner_accuracy": telemetry["planner_accuracy"],
+            "validator_precision": telemetry["validation_accuracy"],
+            "confidence_reliability": telemetry["coverage_score"],
+            "agent_telemetry": telemetry,
+            "schema_growth": schema_request_repo.analytics(),
+            "enterprise_schema": synthetic_enterprise_engine.generate_catalog()["summary"],
         }
+
+    telemetry = load_agent_telemetry_metrics()
+    telemetry_trend = list(telemetry.get("trend") or [])
+    used_telemetry: set[int] = set()
+
+    def timestamp_value(value: object) -> float:
+        text = str(value or "").strip()
+        if not text:
+            return 0.0
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        except ValueError:
+            return 0.0
+
+    def matching_telemetry(query: str, timestamp: object) -> dict[str, object]:
+        target_time = timestamp_value(timestamp)
+        candidates = [
+            (index, point)
+            for index, point in enumerate(telemetry_trend)
+            if index not in used_telemetry and point.get("query") == query
+        ]
+        if not candidates:
+            return {}
+        index, point = min(
+            candidates,
+            key=lambda item: abs(timestamp_value(item[1].get("timestamp")) - target_time),
+        )
+        used_telemetry.add(index)
+        return point
+
+    trend = []
+    for row in rows[-100:]:
+        telemetry_point = matching_telemetry(str(row[0]), row[5])
+        validation_status = str(row[4])
+        valid = validation_status.lower().startswith("valid")
+        trend.append({
+            "query": row[0],
+            "reward": float(row[2]),
+            "execution_time": float(row[3]),
+            "validation_status": validation_status,
+            "timestamp": row[5],
+            "valid": bool(telemetry_point.get("valid", valid)),
+            "confidence": float(telemetry_point.get("confidence", 100.0 if valid else 0.0)),
+            "planner_score": float(telemetry_point.get("entity_score", 0.0)),
+            "validator_score": float(telemetry_point.get("semantic_score", 100.0 if valid else 0.0)),
+            "intent_score": float(telemetry_point.get("intent_score", 0.0)),
+            "join_score": float(telemetry_point.get("join_score", 0.0)),
+        })
 
     rewards = [float(row[2]) for row in rows]
     latencies = [float(row[3]) for row in rows]
-    successes = [1 for row in rows if str(row[4]).lower() == "valid" and float(row[2]) > 0]
-    valid_sql = [1 for row in rows if str(row[4]).lower() == "valid"]
+    successes = [
+        row for row in rows
+        if str(row[4]).lower().startswith("valid") and float(row[2]) > 0
+    ]
+    valid_sql = [
+        row for row in rows
+        if str(row[4]).lower().startswith("valid")
+    ]
 
     return {
         "total": len(rows),
         "average_reward": round(sum(rewards) / len(rewards), 2),
         "query_success_rate": round((len(successes) / len(rows)) * 100, 2),
         "sql_accuracy": round((len(valid_sql) / len(rows)) * 100, 2),
+        "planner_accuracy": telemetry["planner_accuracy"],
+        "validator_precision": telemetry["validation_accuracy"],
+        "confidence_reliability": telemetry["coverage_score"],
         "average_latency": round(sum(latencies) / len(latencies), 4),
-        "trend": [
-            {
-                "query": row[0],
-                "reward": float(row[2]),
-                "execution_time": float(row[3]),
-                "validation_status": row[4],
-                "timestamp": row[5],
-            }
-            for row in rows[-100:]
-        ],
+        "trend": trend,
+        "agent_telemetry": telemetry,
+        "schema_growth": schema_request_repo.analytics(),
+        "enterprise_schema": synthetic_enterprise_engine.generate_catalog()["summary"],
     }
 
 

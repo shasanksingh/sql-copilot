@@ -1,12 +1,63 @@
-venv/
-__pycache__/
-*.pyc
+# Environment and secrets
 .env
+.env.*
+!.env.example
+!**/.env.example
+
+# Python
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Backend caches and generated data
 .faiss/
 backend/.cache/
-frontend/.next/
-frontend/node_modules/
-node_modules/
+instance/
 *.db
+*.db-*
 *.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+
+# Runtime logs and generated reports
+logs/*
+!logs/.gitkeep
+reports/*
+!reports/.gitkeep
+reports_test/*
+!reports_test/.gitkeep
+*.log
+
+# Frontend dependencies and build artifacts
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.vercel/
+frontend/playwright-report/
+frontend/test-results/
+playwright-report/
+test-results/
+
+# Local editor and OS files
+.vscode/
+.idea/
 .DS_Store
+Thumbs.db
+
+# Local model/checkpoint outputs
+rl/models/*.zip
+rl/models/checkpoints/*.zip

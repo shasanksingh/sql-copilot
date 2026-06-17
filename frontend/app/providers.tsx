@@ -5,6 +5,7 @@ import type React from "react";
 import { useEffect, useState } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { useCopilotStore } from "@/features/store/use-copilot-store";
+import { AuthProvider } from "@/features/auth/auth-provider";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const theme = useCopilotStore((state) => state.theme);
@@ -27,8 +28,10 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
   return (
     <QueryClientProvider client={queryClient}>
-      {children}
-      <Toaster />
+      <AuthProvider>
+        {children}
+        <Toaster />
+      </AuthProvider>
     </QueryClientProvider>
   );
 }

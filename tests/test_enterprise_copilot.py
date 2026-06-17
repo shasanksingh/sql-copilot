@@ -84,6 +84,9 @@ def test_active_projects_generates_valid_sql(tmp_path: Path) -> None:
     assert "LOWER(p.status) = 'active'" in result.sql
     assert "p.project_name" in result.sql
     assert "p.budget" not in result.sql
+    assert result.missing_columns == []
+    assert result.missing_joins == []
+    assert {item["table"] for item in result.plan["filters"]} == {"projects"}
 
 
 def test_employee_name_and_department_selects_only_requested_columns(tmp_path: Path) -> None:

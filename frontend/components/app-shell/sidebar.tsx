@@ -10,8 +10,12 @@ import {
   Database,
   GitBranch,
   LayoutDashboard,
+  Network,
+  PanelLeftClose,
+  PanelLeftOpen,
   PlayCircle,
   Settings,
+  ShieldCheck,
   Sparkles,
   X,
   Zap
@@ -20,11 +24,13 @@ import {
 import { cn } from "@/lib/utils";
 import { useCopilotStore } from "@/features/store/use-copilot-store";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/features/auth/auth-provider";
 
 type NavItem = {
   href: Route;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
+  admin?: boolean;
 };
 
 export const navItems: NavItem[] = [
@@ -49,6 +55,11 @@ export const navItems: NavItem[] = [
     icon: GitBranch
   },
   {
+    href: "/data-model-studio",
+    label: "Data Model Studio",
+    icon: Network
+  },
+  {
     href: "/execution",
     label: "Query Execution",
     icon: PlayCircle
@@ -67,10 +78,17 @@ export const navItems: NavItem[] = [
     href: "/settings",
     label: "Settings",
     icon: Settings
+  },
+  {
+    href: "/admin/schema-requests",
+    label: "Admin Review",
+    icon: ShieldCheck,
+    admin: true
   }
 ];
 
 export function Sidebar({ mobile = false }: { mobile?: boolean }) {
+  const { user } = useAuth();
   const pathname = usePathname();
 
   const collapsed = useCopilotStore(
@@ -80,13 +98,16 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
   const setMobileSidebarOpen = useCopilotStore(
     (state) => state.setMobileSidebarOpen
   );
+  const setCollapsed = useCopilotStore(
+    (state) => state.setSidebarCollapsed
+  );
 
   const compact = collapsed && !mobile;
 
   return (
     <aside
       className={cn(
-        "flex h-full flex-col border-r border-white/10 bg-slate-950/78 backdrop-blur-xl",
+        "flex h-full flex-col overflow-hidden border-r border-white/10 bg-slate-950/78 backdrop-blur-xl transition-[width] duration-300 ease-out",
         mobile ? "w-80 max-w-[86vw]" : "hidden lg:flex",
         compact ? "w-20" : "w-72"
       )}
@@ -117,12 +138,22 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
           >
             <X className="h-4 w-4" />
           </Button>
-        ) : null}
+        ) : (
+          <Button
+            variant="ghost"
+            className="hidden h-8 w-8 px-0 lg:inline-flex"
+            onClick={() => setCollapsed(!collapsed)}
+            aria-label="Collapse sidebar"
+            title={compact ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            {compact ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+          </Button>
+        )}
       </div>
 
-      <nav className="flex-1 space-y-1 p-3">
-        {navItems.map((item) => {
-          const active = pathname === item.href;
+      <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3 scrollbar-thin">
+        {navItems.filter((item) => !item.admin || user?.role === "admin").map((item) => {
+          const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
           const Icon = item.icon;
 
           return (
