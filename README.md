@@ -1,6 +1,29 @@
 # SQL Copilot
 
-SQL Copilot is a local-first, schema-aware natural-language SQL workspace. It combines deterministic query planning, read-only SQL validation, explainable confidence scoring, responsive enterprise UI, SQLite-backed authentication, and governed schema requests.
+> Turn business questions into planned, validated, and explainable read-only SQL.
+
+SQL Copilot is a local-first, schema-aware analytics workspace for teams that need more control than a single text-to-SQL prompt. It combines deterministic intent planning, entity extraction, role-aware schema linking, guarded SQL generation, coverage checks, and confidence scoring with a responsive enterprise interface.
+
+The system can run without a remote LLM by using its deterministic agent pipeline. When a remote model is enabled, the same validation and governance boundaries remain in place.
+
+<p align="center">
+  <a href="https://sql-copilot-puce.vercel.app">
+    <img src="https://img.shields.io/badge/Live%20Workspace-Open-2563EB?style=for-the-badge&logo=vercel&logoColor=white" alt="Open SQL Copilot" />
+  </a>
+  <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10 or newer" />
+  <img src="https://img.shields.io/badge/FastAPI-Backend-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI backend" />
+  <img src="https://img.shields.io/badge/Next.js-15-111827?style=for-the-badge&logo=nextdotjs&logoColor=white" alt="Next.js 15" />
+</p>
+
+## Product At A Glance
+
+| Concern | SQL Copilot approach |
+| --- | --- |
+| Natural-language analytics | Intent, entities, measures, dimensions, and time windows are planned before SQL generation. |
+| Schema grounding | Tables, columns, relationships, and role-aware joins are linked against the active schema workbook. |
+| Safety | Only one read-only `SELECT` statement is accepted; write, DDL, execution, and privilege operations are blocked. |
+| Explainability | Planner steps, validation coverage, confidence signals, join status, and optimization guidance remain inspectable. |
+| Deployment boundary | Local deterministic mode works without remote model credentials; production settings add secure auth and controlled origins. |
 
 For local startup, signup troubleshooting, and administrator access, use [docs/local_setup_and_admin.md](docs/local_setup_and_admin.md).
 
