@@ -12,6 +12,8 @@ export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
   const [message, setMessage] = useState("");
   const [resetToken, setResetToken] = useState("");
+  const [resetUrl, setResetUrl] = useState("");
+  const [delivery, setDelivery] = useState("");
   const [loading, setLoading] = useState(false);
 
   const submit = async (event: React.FormEvent) => {
@@ -21,8 +23,22 @@ export default function ForgotPasswordPage() {
       const response = await forgotPassword(email);
       setMessage(response.message);
       setResetToken(response.reset_token ?? "");
+      setResetUrl(response.reset_url ?? "");
+      const emailDelivery = response.email_delivery;
+      if (emailDelivery?.status === "sent") {
+        setDelivery("Reset email sent. Check your inbox and spam folder.");
+      } else if (emailDelivery?.status === "outbox") {
+        setDelivery(`Development email written to ${emailDelivery.outbox_path}.`);
+      } else if (emailDelivery?.status === "account_not_found") {
+        setDelivery("No active local account exists for this email.");
+      } else if (emailDelivery?.reason) {
+        setDelivery(emailDelivery.reason);
+      } else {
+        setDelivery("");
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Unable to create reset request.");
+      setDelivery("");
     } finally {
       setLoading(false);
     }
@@ -36,10 +52,11 @@ export default function ForgotPasswordPage() {
           <Input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required />
         </label>
         {message ? <div className="rounded-md border border-cyan-300/20 bg-cyan-300/10 p-3 text-sm text-cyan-100">{message}</div> : null}
-        {resetToken ? (
-          <Link className="block rounded-md border border-indigo-300/20 bg-indigo-300/10 p-3 text-sm text-indigo-100" href={`/reset-password?token=${encodeURIComponent(resetToken)}`}>
-            Continue with the development reset token
-          </Link>
+        {delivery ? <div className="rounded-md border border-emerald-300/20 bg-emerald-300/10 p-3 text-sm text-emerald-100">{delivery}</div> : null}
+        {resetUrl || resetToken ? (
+          <a className="block rounded-md border border-indigo-300/20 bg-indigo-300/10 p-3 text-sm text-indigo-100" href={resetUrl || `/reset-password?token=${encodeURIComponent(resetToken)}`}>
+            Continue with the development reset link
+          </a>
         ) : null}
         <Button className="w-full" type="submit" disabled={loading}>
           <MailCheck className="h-4 w-4" />

@@ -4,12 +4,22 @@ import type {
   EnterpriseSchemaResponse,
   ErResponse,
   HealthResponse,
+  MetadataStatusResponse,
   MetricsResponse,
+  MetricsRange,
   RelationshipResponse,
   SchemaCatalogResponse,
+  SchemaStudioResponse,
+  SchemaStudioTablePayload,
   SchemaRequest,
   SchemaRequestsResponse,
-  FeedbackItem
+  FeedbackItem,
+  ForgotPasswordResponse,
+  ConfigureProviderPayload,
+  ConfigureProviderResponse,
+  RuntimeConfigResponse,
+  ConfigureEmailPayload,
+  ConfigureEmailResponse
 } from "./types";
 
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "");
@@ -92,6 +102,44 @@ export function getSchemaCatalog() {
   return request<SchemaCatalogResponse>("/schema/catalog");
 }
 
+export function getMetadataStatus() {
+  return request<MetadataStatusResponse>("/metadata/status");
+}
+
+export function refreshMetadata() {
+  return request<{ status: MetadataStatusResponse["status"] }>("/metadata/refresh", {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
+export function createSchemaStudioTable(payload: SchemaStudioTablePayload) {
+  return request<SchemaStudioResponse>("/schema/studio/tables", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function updateSchemaStudioTable(tableName: string, payload: SchemaStudioTablePayload) {
+  return request<SchemaStudioResponse>(`/schema/studio/tables/${encodeURIComponent(tableName)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function deleteSchemaStudioTable(tableName: string) {
+  return request<SchemaStudioResponse>(`/schema/studio/tables/${encodeURIComponent(tableName)}`, {
+    method: "DELETE"
+  });
+}
+
+export function applySchemaRequest(requestId: number) {
+  return request<SchemaStudioResponse>(`/schema/studio/apply-request/${requestId}`, {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
 export function getEnterpriseSchema() {
   return request<EnterpriseSchemaResponse>("/enterprise-schema");
 }
@@ -157,7 +205,7 @@ export function logout() {
 }
 
 export function forgotPassword(email: string) {
-  return request<{ message: string; reset_token?: string }>("/auth/forgot-password", {
+  return request<ForgotPasswordResponse>("/auth/forgot-password", {
     method: "POST",
     body: JSON.stringify({ email })
   });
@@ -198,10 +246,29 @@ export function getErDiagram() {
   return request<ErResponse>("/schema/er");
 }
 
-export function getMetrics() {
-  return request<MetricsResponse>("/metrics");
+export function getMetrics(range?: MetricsRange["key"]) {
+  const suffix = range ? `?range=${encodeURIComponent(range)}` : "";
+  return request<MetricsResponse>(`/metrics${suffix}`);
 }
 
 export function getHealth() {
   return request<HealthResponse>("/health");
+}
+
+export function getRuntimeConfig() {
+  return request<RuntimeConfigResponse>("/runtime/config");
+}
+
+export function configureProvider(payload: ConfigureProviderPayload) {
+  return request<ConfigureProviderResponse>("/runtime/provider/configure", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function configureEmail(payload: ConfigureEmailPayload) {
+  return request<ConfigureEmailResponse>("/runtime/email/configure", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
 }

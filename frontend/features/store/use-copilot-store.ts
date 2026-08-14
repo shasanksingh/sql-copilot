@@ -19,6 +19,8 @@ type CopilotState = {
   setTheme: (theme: ThemeMode) => void;
   addResponse: (response: CopilotResponse) => void;
   setActiveResponse: (response?: CopilotResponse) => void;
+  deleteResponse: (index: number) => void;
+  clearHistory: () => void;
 };
 
 export const useCopilotStore = create<CopilotState>()(
@@ -35,16 +37,29 @@ export const useCopilotStore = create<CopilotState>()(
       setTheme: (theme) => set({ theme }),
       addResponse: (response) =>
         set((state) => ({
-          history: [...state.history, response].slice(-20),
+          history: [...state.history, response].slice(-50),
           activeResponse: response
         })),
-      setActiveResponse: (response) => set({ activeResponse: response })
+      setActiveResponse: (response) => set({ activeResponse: response }),
+      deleteResponse: (index) =>
+        set((state) => {
+          const nextHistory = state.history.filter((_, itemIndex) => itemIndex !== index);
+          return {
+            history: nextHistory,
+            activeResponse: nextHistory.includes(state.activeResponse as CopilotResponse)
+              ? state.activeResponse
+              : nextHistory.at(-1)
+          };
+        }),
+      clearHistory: () => set({ history: [], activeResponse: undefined })
     }),
     {
       name: "sql-copilot-ui",
       partialize: (state) => ({
         sidebarCollapsed: state.sidebarCollapsed,
-        theme: state.theme
+        theme: state.theme,
+        history: state.history,
+        activeResponse: state.activeResponse
       })
     }
   )

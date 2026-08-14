@@ -9,6 +9,8 @@ sqlglot
 langchain
 langchain-community
 langchain-openai
+langgraph
+openai
 faiss-cpu
 rank-bm25
 uvicorn

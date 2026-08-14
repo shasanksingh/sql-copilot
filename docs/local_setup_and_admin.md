@@ -9,18 +9,31 @@ This is the single setup guide for starting SQL Copilot, fixing signup connectio
 The common causes are:
 
 1. The backend is not running on port `5000`.
-2. The frontend was opened with `http://localhost:3000` while the backend allowed only `http://127.0.0.1:3000`.
+2. The frontend was opened with `http://localhost:4000` while the backend allowed only `http://127.0.0.1:4000`.
 3. `NEXT_PUBLIC_API_BASE_URL` points to the wrong backend URL.
 4. The frontend or backend was not restarted after configuration changed.
 
 Development mode now accepts both local frontend addresses:
 
 ```text
-http://127.0.0.1:3000
-http://localhost:3000
+http://127.0.0.1:4000
+http://localhost:4000
 ```
 
 The frontend also displays the backend address when it cannot connect.
+
+## D-Drive Setup
+
+If C: is low on space, prepare and copy the project to D: before installing dependencies:
+
+```powershell
+.\scripts\prepare_d_drive.ps1 -CopyProject
+cd D:\Projects\EnterpriseSQLCopilot
+```
+
+Use `.env.example` or `.vscode/launch.json` as the runtime template. The backend loads a root `.env` file before resolving runtime paths and provider settings. The backend honors `SQL_COPILOT_RUNTIME_DIR`, `SQL_COPILOT_SQLITE_DIR`, `SQL_COPILOT_CACHE_DIR`, `SQL_COPILOT_LOG_DIR`, `SQL_COPILOT_TEMP_DIR`, and `SQL_COPILOT_MODEL_DIR` so generated databases, logs, caches, temp files, FAISS indexes, and optional model artifacts stay under `D:\Projects\EnterpriseSQLCopilot` or `D:\AIModels`.
+
+The app never downloads a local model automatically.
 
 ## One-Time Installation
 
@@ -56,8 +69,8 @@ npm run dev
 Open one of these URLs:
 
 ```text
-http://127.0.0.1:3000
-http://localhost:3000
+http://127.0.0.1:4000
+http://localhost:4000
 ```
 
 Do not open the HTML files directly from the filesystem.
@@ -116,7 +129,7 @@ Sign out and sign in again if the account was already open in the browser.
 2. Open:
 
 ```text
-http://127.0.0.1:3000/admin/schema-requests
+http://127.0.0.1:4000/admin/schema-requests
 ```
 
 3. The sidebar also shows `Admin Review` for administrator accounts.
@@ -125,11 +138,18 @@ The page supports:
 
 - reviewing all schema requests
 - approving requests
+- applying generated schema proposals to the live metadata overlay
 - marking schemas generated
 - rejecting requests
 - reviewing user feedback
 
 A normal user receives `403 Administrator access required` from admin APIs and does not see the admin navigation item.
+
+## Schema Uploads And Live Metadata
+
+Open `/data-model-studio` to submit table or schema requests. Uploads can be CSV, Excel, JSON, SQL DDL, or Parquet up to 5 MB. The backend infers column names, SQL types, primary keys, foreign-key hints, indexes, and preview rows before creating the generated proposal.
+
+Administrators can also use `Apply Live`, `Apply proposal`, and `Refresh` from Data Model Studio. These actions update `DYNAMIC_SCHEMA_FILE` under `.runtime`, refresh BM25/FAISS metadata, reset the local planner instance, and update catalog/relationship/dashboard views without restarting the backend. Workbook tables remain read-only; only dynamic overlay tables can be deleted.
 
 ## Alternative Bootstrap Admin Method
 
@@ -160,18 +180,31 @@ To set it explicitly, create `frontend/.env.local`:
 NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:5000
 ```
 
+## Optional NVIDIA GPT-OSS-20B
+
+NVIDIA is server-side only. Put real credentials in your local `.env` or shell, never in frontend files:
+
+```dotenv
+SQL_COPILOT_LLM_PROVIDER=nvidia
+NVIDIA_API_KEY=
+NVIDIA_MODEL=openai/gpt-oss-20b
+NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
+```
+
+If the key is missing or the provider fails, the backend starts normally and `/sql` uses deterministic fallback. Check status with authenticated `GET /runtime/config`; administrators can inspect sanitized provider diagnostics at `GET /diagnostics/provider`.
+
 Restart `npm run dev` after changing `.env.local`.
 
 The local authentication database defaults to:
 
 ```text
-backend/sql_copilot.db
+.runtime/sqlite/sql_copilot.db
 ```
 
 To use another database:
 
 ```powershell
-$env:AUTH_DB_PATH="C:\data\sql_copilot.db"
+$env:AUTH_DB_PATH="D:\Projects\EnterpriseSQLCopilot\.runtime\sqlite\sql_copilot.db"
 python -m uvicorn main:asgi_app --host 127.0.0.1 --port 5000
 ```
 
@@ -211,7 +244,7 @@ Invoke-WebRequest -UseBasicParsing http://127.0.0.1:5000/health
 Check whether ports are listening:
 
 ```powershell
-netstat -ano | Select-String ':3000\s|:5000\s'
+netstat -ano | Select-String ':4000\s|:5000\s'
 ```
 
 Then restart both servers.
@@ -234,10 +267,10 @@ The account role is still `user`. Run the admin management command, restart the 
 
 ### CORS Error In Browser Console
 
-For local development, use port `3000`. If a different frontend port is required:
+For local development, use port `4000`. If a different frontend port is required:
 
 ```powershell
-$env:FRONTEND_ORIGINS="http://127.0.0.1:3000,http://localhost:3000,http://127.0.0.1:3100"
+$env:FRONTEND_ORIGINS="http://127.0.0.1:4000,http://localhost:4000,http://127.0.0.1:4100"
 python -m uvicorn main:asgi_app --host 127.0.0.1 --port 5000
 ```
 

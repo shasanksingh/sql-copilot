@@ -23,7 +23,9 @@ flowchart LR
   A -->|no| G[Schema Graph]
   G --> J[Join Discovery]
   J --> P[Query Planner]
-  P --> S[SQL Generation]
+  P --> PV[Plan Validation]
+  PV --> N[Optional NVIDIA GPT-OSS-20B Assist]
+  N --> S[SQL Generation or Repair]
   S --> X[Read-only Validation]
   X --> K[Coverage Analysis]
   K --> F[Confidence Coordination]
@@ -70,7 +72,9 @@ tests/
 - Schema Graph and Join Discovery find valid direct and multi-hop paths.
 - Query Planner builds a structured plan before SQL generation.
 - Query Planner uses schema-driven measure, date, dimension, and role-aware join resolvers across supported tables rather than exact prompt-only branches.
-- SQL Generation renders only from the accepted plan.
+- Plan Validation checks tables, columns, relationships, aggregations, filters, and graph connectivity before optional model assistance.
+- NVIDIA GPT-OSS-20B can review plans, generate SQL, repair validator failures, and summarize reasoning from bounded schema context.
+- SQL Generation renders only from the accepted plan and falls back to deterministic output when the provider is missing or unsafe.
 - SQL Validation enforces one read-only `SELECT`, schema validity, and intent requirements.
 - Coverage Analysis verifies that requested displays, filters, groups, and aggregates survive into SQL.
 - Confidence Coordination combines planner, validator, resolver, and coverage evidence.
@@ -93,7 +97,7 @@ These endpoints are now behind session validation except `/health`. The SQL resp
 
 The dashboard reads `planner_accuracy`, `sql_accuracy`, `validator_precision`, and `confidence_reliability` from `/metrics`. Planner, Optimizer, Explainable AI, and Execution reuse the active Copilot result instead of issuing duplicate SQL requests.
 
-Dashboard trend points also expose per-query confidence, planner, validator, intent, and join scores. The frontend recalculates quality cards, success rate, latency, and recent activity for the selected time window and refreshes metrics every 10 seconds.
+Dashboard trend points also expose per-query confidence, planner, validator, intent, join, provider, model, fallback, repair, and complexity signals. The frontend recalculates quality cards, success rate, latency, and recent activity for the selected time window and refreshes metrics every 10 seconds.
 
 The suggestion strip remains diverse after each query: up to two prompts come from the latest tables and the remaining prompts continue to cover HR, Finance, Projects, Operations, and Analytics.
 

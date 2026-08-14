@@ -75,14 +75,126 @@ body {
   color: #334155;
 }
 
+.light .text-cyan-50 {
+  color: #0f172a;
+}
+
+.light .text-cyan-100,
+.light .text-cyan-200 {
+  color: #0e7490;
+}
+
+.light .hover\:text-cyan-100:hover,
+.light .hover\:text-cyan-200:hover {
+  color: #155e75;
+}
+
+.light .text-indigo-100,
+.light .text-indigo-200 {
+  color: #3730a3;
+}
+
+.light .hover\:text-indigo-100:hover,
+.light .hover\:text-indigo-200:hover {
+  color: #312e81;
+}
+
+.light .text-emerald-100,
+.light .text-emerald-200 {
+  color: #047857;
+}
+
+.light .hover\:text-emerald-100:hover,
+.light .hover\:text-emerald-200:hover {
+  color: #065f46;
+}
+
+.light .text-amber-100,
+.light .text-amber-200 {
+  color: #92400e;
+}
+
+.light .hover\:text-amber-100:hover,
+.light .hover\:text-amber-200:hover {
+  color: #78350f;
+}
+
+.light .placeholder\:text-slate-500::placeholder {
+  color: #64748b;
+  opacity: 1;
+}
+
 .light .border-white\/10,
 .light .border-white\/12 {
   border-color: rgba(15, 23, 42, 0.1);
 }
 
+.light .border-cyan-300\/10,
+.light .border-cyan-300\/15,
+.light .border-cyan-300\/20,
+.light .border-cyan-300\/25 {
+  border-color: rgba(14, 116, 144, 0.24);
+}
+
+.light .border-indigo-300\/10,
+.light .border-indigo-300\/15,
+.light .border-indigo-300\/20,
+.light .border-indigo-300\/25 {
+  border-color: rgba(67, 56, 202, 0.24);
+}
+
+.light .border-emerald-300\/10,
+.light .border-emerald-300\/15,
+.light .border-emerald-300\/20,
+.light .border-emerald-300\/25 {
+  border-color: rgba(4, 120, 87, 0.24);
+}
+
+.light .border-amber-300\/10,
+.light .border-amber-300\/15,
+.light .border-amber-300\/20,
+.light .border-amber-300\/25 {
+  border-color: rgba(146, 64, 14, 0.24);
+}
+
 .light .bg-white\/\[0\.04\],
 .light .bg-white\/\[0\.06\] {
   background-color: rgba(255, 255, 255, 0.72);
+}
+
+.light .bg-cyan-300\/5,
+.light .bg-cyan-300\/10,
+.light .bg-cyan-300\/15 {
+  background-color: rgba(14, 116, 144, 0.1);
+}
+
+.light .bg-indigo-300\/5,
+.light .bg-indigo-300\/10,
+.light .bg-indigo-300\/15 {
+  background-color: rgba(67, 56, 202, 0.1);
+}
+
+.light .bg-emerald-300\/5,
+.light .bg-emerald-300\/10,
+.light .bg-emerald-300\/15 {
+  background-color: rgba(4, 120, 87, 0.1);
+}
+
+.light .bg-amber-300\/5,
+.light .bg-amber-300\/10,
+.light .bg-amber-300\/15 {
+  background-color: rgba(146, 64, 14, 0.1);
+}
+
+.light .ring-cyan-300\/15,
+.light .ring-cyan-300\/30 {
+  --tw-ring-color: rgba(14, 116, 144, 0.24);
+}
+
+.light pre.bg-slate-950\/70,
+.light pre.bg-slate-950\/80 {
+  background-color: rgba(248, 250, 252, 0.98);
+  border: 1px solid rgba(15, 23, 42, 0.1);
 }
 
 .react-flow__attribution {

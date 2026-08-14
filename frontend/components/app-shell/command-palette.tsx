@@ -102,7 +102,7 @@ export function CommandPalette() {
                   key={`${action.href}-${action.label}`}
                   href={action.href}
                   onClick={() => setOpen(false)}
-                  className="block rounded-md px-3 py-3 text-sm text-slate-300 transition hover:bg-white/10 hover:text-white"
+                  className="block rounded-md px-3 py-3 text-sm text-slate-600 transition hover:bg-slate-900/[0.06] hover:text-slate-950 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
                 >
                   {action.label}
 

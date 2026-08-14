@@ -14,11 +14,16 @@ _NON_ENTITY_TERMS = {
     "inactive", "open", "closed", "completed", "pending", "status", "number",
     "count", "total", "sum", "average", "avg", "min", "max",
     "find", "this", "week", "month", "quarter", "running", "cumulative",
+    "detail", "details",
 }
 
 
 def _terms(value: str) -> set[str]:
-    return set(re.findall(r"[a-z][a-z0-9_]*", (value or "").lower().replace("_", " ")))
+    tokens = set(re.findall(r"[a-z][a-z0-9_]*", (value or "").lower().replace("-", " ")))
+    expanded = set(tokens)
+    for token in tokens:
+        expanded.update(part for part in token.split("_") if part)
+    return expanded
 
 
 def _entity_terms(entities: EntityExtraction | None) -> set[str]:

@@ -12,6 +12,10 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from backend.auth import AuthStore
+from backend.runtime_config import configure_runtime_paths, env_path
+
+
+RUNTIME_PATHS = configure_runtime_paths(ROOT_DIR)
 
 
 def main() -> int:
@@ -22,7 +26,7 @@ def main() -> int:
     parser.add_argument("--name", default="SQL Copilot Admin", help="Name for a new account")
     parser.add_argument(
         "--db-path",
-        default=os.getenv("AUTH_DB_PATH", str(ROOT_DIR / "backend" / "sql_copilot.db")),
+        default=str(env_path("AUTH_DB_PATH", RUNTIME_PATHS.sqlite_root / "sql_copilot.db", RUNTIME_PATHS.project_root)),
         help="Authentication SQLite database path",
     )
     args = parser.parse_args()

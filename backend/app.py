@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import io
 import json
 import sqlite3
 import time
@@ -14,12 +15,29 @@ from threading import Timer
 
 import pandas as pd
 from flask import Flask, g, jsonify, make_response, request, send_from_directory
+from agentic.custody_balance_domain import (
+    CUSTODY_BALANCE_ALIASES,
+    CUSTODY_BALANCE_COLUMN_HINTS,
+    CUSTODY_BALANCE_DEFAULT_DISPLAY_COLUMNS,
+    CUSTODY_BALANCE_LABEL_COLUMNS,
+    CUSTODY_BALANCE_RELATIONSHIPS,
+    CUSTODY_BALANCE_SCHEMA_TABLES,
+    CUSTODY_BALANCE_TABLE_HINTS,
+)
 from agentic.enterprise_copilot import EnterpriseSQLCopilot
 try:
     from backend.auth import AuthStore, SlidingWindowRateLimiter
+    from backend.email_delivery import load_email_config, password_reset_url, send_password_reset_email, send_test_email
+    from backend.llm_providers import SUPPORTED_PROVIDERS, create_llm_provider, load_provider_config
+    from backend.runtime_config import configure_runtime_paths, env_path, load_dotenv_file, resolve_path
+    from backend.spider_rag import SpiderTextSqlRag
     from backend.synthetic_enterprise_data import SchemaRequestRepository, SyntheticEnterpriseDataEngine
 except ImportError:  # pragma: no cover - supports direct python backend/app.py execution
     from auth import AuthStore, SlidingWindowRateLimiter
+    from email_delivery import load_email_config, password_reset_url, send_password_reset_email, send_test_email
+    from llm_providers import SUPPORTED_PROVIDERS, create_llm_provider, load_provider_config
+    from runtime_config import configure_runtime_paths, env_path, load_dotenv_file, resolve_path
+    from spider_rag import SpiderTextSqlRag
     from synthetic_enterprise_data import SchemaRequestRepository, SyntheticEnterpriseDataEngine
 
 from rl.environment.sql_env import (
@@ -83,28 +101,60 @@ except ImportError:
 
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent
-DATA_DIR = BASE_DIR / "data"
+
+
+def _env_truthy(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+load_dotenv_file(ROOT_DIR / ".env")
+RUNTIME_PATHS = configure_runtime_paths(ROOT_DIR)
+RUNTIME_PROVIDER_ENV_FILE = RUNTIME_PATHS.runtime_root / "secrets" / "provider.env"
+RUNTIME_EMAIL_ENV_FILE = RUNTIME_PATHS.runtime_root / "secrets" / "email.env"
+if not _env_truthy("SQL_COPILOT_DISABLE_RUNTIME_SECRETS"):
+    load_dotenv_file(RUNTIME_PROVIDER_ENV_FILE, override=True)
+    load_dotenv_file(RUNTIME_EMAIL_ENV_FILE, override=True)
+DATA_DIR = env_path("SQL_COPILOT_DATA_DIR", BASE_DIR / "data", RUNTIME_PATHS.project_root)
 STATIC_DIR = BASE_DIR / "static"
 
-USE_REMOTE_LLM = os.getenv("USE_REMOTE_LLM", "").lower() in {"1", "true", "yes"}
-BASE_URL = os.getenv("GENAI_BASE_URL", "https://genailab.tcs.in")
-API_KEY = os.getenv("GENAI_API_KEY", "")
+PROVIDER_CONFIG = load_provider_config(RUNTIME_PATHS.model_root)
+USE_REMOTE_LLM = PROVIDER_CONFIG.chat_enabled
+BASE_URL = PROVIDER_CONFIG.base_url
+API_KEY = PROVIDER_CONFIG.api_key or ("ollama" if PROVIDER_CONFIG.provider == "ollama" else "")
 
-SCHEMA_FILE = Path(os.getenv("SCHEMA_FILE", str(DATA_DIR / "RAG_DOC.xlsx")))
+SCHEMA_FILE = env_path("SCHEMA_FILE", DATA_DIR / "RAG_DOC.xlsx", RUNTIME_PATHS.project_root)
 if not SCHEMA_FILE.exists() and (ROOT_DIR / "RAG_DOC .xlsx").exists():
     SCHEMA_FILE = ROOT_DIR / "RAG_DOC .xlsx"
-FAISS_TABLE_INDEX_PATH = str(BASE_DIR / ".cache" / "faiss_table_index")
-FAISS_COL_INDEX_PATH = str(BASE_DIR / ".cache" / "faiss_col_index")
+SPIDER_TEXT_SQL_FILE = env_path(
+    "SPIDER_TEXT_SQL_FILE",
+    ROOT_DIR / "spider_text_sql.csv",
+    RUNTIME_PATHS.project_root,
+)
+FAISS_TABLE_INDEX_PATH = str(env_path("FAISS_TABLE_INDEX_PATH", RUNTIME_PATHS.faiss_root / "table_index", RUNTIME_PATHS.project_root))
+FAISS_COL_INDEX_PATH = str(env_path("FAISS_COL_INDEX_PATH", RUNTIME_PATHS.faiss_root / "column_index", RUNTIME_PATHS.project_root))
+DYNAMIC_SCHEMA_FILE = env_path(
+    "DYNAMIC_SCHEMA_FILE",
+    RUNTIME_PATHS.runtime_root / "dynamic_schema.json",
+    RUNTIME_PATHS.project_root,
+)
 
-DB_PATH = None
-FEEDBACK_DB_PATH = os.getenv("AGENT_FEEDBACK_DB_PATH", str(BASE_DIR / "sql_agent_feedback.sqlite"))
-AUTH_DB_PATH = os.getenv("AUTH_DB_PATH", str(BASE_DIR / "sql_copilot.db"))
+DB_PATH = (
+    str(env_path("SQL_COPILOT_EXECUTION_DB_PATH", RUNTIME_PATHS.sqlite_root / "execution.sqlite", RUNTIME_PATHS.project_root))
+    if os.getenv("SQL_COPILOT_EXECUTION_DB_PATH")
+    else None
+)
+FEEDBACK_DB_PATH = str(env_path("AGENT_FEEDBACK_DB_PATH", RUNTIME_PATHS.sqlite_root / "sql_agent_feedback.sqlite", RUNTIME_PATHS.project_root))
+AUTH_DB_PATH = str(env_path("AUTH_DB_PATH", RUNTIME_PATHS.sqlite_root / "sql_copilot.db", RUNTIME_PATHS.project_root))
 AUTH_JWT_SECRET = os.getenv("AUTH_JWT_SECRET", "")
-SCHEMA_REQUEST_DB_PATH = os.getenv("SCHEMA_REQUEST_DB_PATH", AUTH_DB_PATH)
-RL_MODEL_PATH = os.getenv("RL_MODEL_PATH", str(ROOT_DIR / "rl" / "models" / "sql_ppo_agent.zip"))
+SCHEMA_REQUEST_DB_PATH = str(resolve_path(os.getenv("SCHEMA_REQUEST_DB_PATH"), Path(AUTH_DB_PATH), RUNTIME_PATHS.project_root))
+LEGACY_RL_MODEL_PATH = ROOT_DIR / "rl" / "models" / "sql_ppo_agent.zip"
+DEFAULT_RL_MODEL_PATH = RUNTIME_PATHS.model_root / "rl" / "sql_ppo_agent.zip"
+if not os.getenv("RL_MODEL_PATH") and LEGACY_RL_MODEL_PATH.exists():
+    DEFAULT_RL_MODEL_PATH = LEGACY_RL_MODEL_PATH
+RL_MODEL_PATH = str(env_path("RL_MODEL_PATH", DEFAULT_RL_MODEL_PATH, RUNTIME_PATHS.project_root))
 RL_ENABLED = os.getenv("RL_ENABLED", "1").lower() in {"1", "true", "yes"}
 APP_ENV = os.getenv("APP_ENV", "development").lower()
-FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://127.0.0.1:3000").rstrip("/")
+FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://127.0.0.1:4000").rstrip("/")
 FRONTEND_ORIGINS = {
     origin.strip().rstrip("/")
     for origin in os.getenv("FRONTEND_ORIGINS", FRONTEND_ORIGIN).split(",")
@@ -112,18 +162,18 @@ FRONTEND_ORIGINS = {
 }
 if APP_ENV != "production":
     FRONTEND_ORIGINS.update({
-        "http://127.0.0.1:3000",
-        "http://localhost:3000",
+        "http://127.0.0.1:4000",
+        "http://localhost:4000",
     })
 COOKIE_SECURE = os.getenv("AUTH_COOKIE_SECURE", "1" if APP_ENV == "production" else "0").lower() in {"1", "true", "yes"}
 ACCESS_COOKIE = "sql_copilot_access"
 CSRF_COOKIE = "sql_copilot_csrf"
-MAX_RETRIES = 3
-CONFIDENCE_THRESHOLD = 80
+MAX_RETRIES = PROVIDER_CONFIG.max_generation_retries
+CONFIDENCE_THRESHOLD = int(os.getenv("CONFIDENCE_LOW_THRESHOLD", "75"))
 
 http_client = (
     httpx.Client(verify=False)
-    if USE_REMOTE_LLM and API_KEY and httpx is not None
+    if USE_REMOTE_LLM and httpx is not None
     else None
 )
 
@@ -134,7 +184,7 @@ if CORS:
         origins=sorted(FRONTEND_ORIGINS),
         supports_credentials=True,
         allow_headers=["Content-Type", "X-CSRF-Token"],
-        methods=["GET", "POST", "PATCH", "OPTIONS"],
+        methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     )
 
 asgi_app = WsgiToAsgi(app) if WsgiToAsgi else None
@@ -148,7 +198,7 @@ def add_cors_headers(response):
         response.headers["Access-Control-Allow-Credentials"] = "true"
         response.headers.add("Vary", "Origin")
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-CSRF-Token"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, OPTIONS"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -166,6 +216,7 @@ schema_request_repo = SchemaRequestRepository(Path(SCHEMA_REQUEST_DB_PATH))
 synthetic_enterprise_engine = SyntheticEnterpriseDataEngine(
     int(os.getenv("ENTERPRISE_SYNTHETIC_TABLES", "180"))
 )
+EMAIL_CONFIG = load_email_config(RUNTIME_PATHS.runtime_root, FRONTEND_ORIGIN)
 rate_limiter = SlidingWindowRateLimiter()
 
 if os.getenv("BOOTSTRAP_ADMIN_EMAIL") and os.getenv("BOOTSTRAP_ADMIN_PASSWORD"):
@@ -263,6 +314,16 @@ def admin_required(view):
 
     return wrapped
 
+
+def provider_config_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if APP_ENV == "production" and getattr(g, "current_user", {}).get("role") != "admin":
+            return jsonify({"error": "Administrator access required."}), 403
+        return view(*args, **kwargs)
+
+    return wrapped
+
 try:
     from rl.agent.ppo_agent import PPOAgent
 except ImportError:
@@ -270,33 +331,433 @@ except ImportError:
 
 ppo_agent = None
 enterprise_copilot = None
+spider_text_sql_rag = None
 
 
  
 # 2. MODELS
  
 
-if USE_REMOTE_LLM and API_KEY and OpenAIEmbeddings and http_client:
-    embeddings = OpenAIEmbeddings(
-        base_url=BASE_URL,
-        model="azure/genailab-maas-text-embedding-3-large",
-        api_key=API_KEY,
-        http_client=http_client,
-    )
-else:
-    embeddings = None
-    log_step("[local] Remote embeddings disabled; using keyword/BM25 retrieval")
+def _create_http_client(provider_config):
+    if provider_config.chat_enabled and httpx is not None:
+        return httpx.Client(verify=False)
+    return None
 
-if USE_REMOTE_LLM and API_KEY and ChatOpenAI and http_client:
-    llm = ChatOpenAI(
-        base_url=BASE_URL,
-        model="genailab-maas-gpt-5.4",
-        api_key=API_KEY,
+
+def _create_embeddings(provider_config, provider_http_client):
+    if provider_config.embeddings_enabled and OpenAIEmbeddings and provider_http_client:
+        try:
+            return OpenAIEmbeddings(
+                base_url=provider_config.base_url,
+                model=provider_config.embedding_model,
+                api_key=provider_config.api_key,
+                http_client=provider_http_client,
+            )
+        except Exception:
+            log_step("[local] Remote embeddings initialization failed; using keyword/BM25 retrieval")
+    else:
+        log_step(
+            f"[local] Remote embeddings disabled for provider '{provider_config.provider}'; "
+            "using keyword/BM25 retrieval"
+        )
+    return None
+
+
+def _log_llm_status(provider_config, provider_client) -> None:
+    if provider_client.available:
+        log_step(
+            f"[llm] {provider_config.provider} provider ready with model "
+            f"{provider_config.chat_model}"
+        )
+        return
+    if provider_config.needs_sdk:
+        log_step(
+            f"[local] Provider '{provider_config.provider}' selected but no SDK adapter is configured; "
+            "using deterministic SQL generation"
+        )
+    elif provider_config.provider == "nvidia" and not provider_config.api_key:
+        log_step("[local] NVIDIA provider not configured; using deterministic fallback")
+    else:
+        log_step("[local] Remote LLM disabled; using deterministic SQL generation")
+
+
+def reload_llm_provider(*, reset_copilot: bool = True) -> dict[str, object]:
+    global PROVIDER_CONFIG, USE_REMOTE_LLM, BASE_URL, API_KEY, MAX_RETRIES
+    global http_client, embeddings, LLM_PROVIDER_CLIENT, llm, enterprise_copilot
+
+    old_http_client = globals().get("http_client")
+    if old_http_client is not None:
+        try:
+            old_http_client.close()
+        except Exception:
+            pass
+
+    PROVIDER_CONFIG = load_provider_config(RUNTIME_PATHS.model_root)
+    USE_REMOTE_LLM = PROVIDER_CONFIG.chat_enabled
+    BASE_URL = PROVIDER_CONFIG.base_url
+    API_KEY = PROVIDER_CONFIG.api_key or ("ollama" if PROVIDER_CONFIG.provider == "ollama" else "")
+    MAX_RETRIES = PROVIDER_CONFIG.max_generation_retries
+    http_client = _create_http_client(PROVIDER_CONFIG)
+    embeddings = _create_embeddings(PROVIDER_CONFIG, http_client)
+    LLM_PROVIDER_CLIENT = create_llm_provider(
+        PROVIDER_CONFIG,
+        chat_client_factory=ChatOpenAI,
         http_client=http_client,
     )
-else:
-    llm = None
-    log_step("[local] Remote LLM disabled; using local rule-based SQL generation")
+    llm = LLM_PROVIDER_CLIENT.chat_client if LLM_PROVIDER_CLIENT.available else None
+    if reset_copilot and "enterprise_copilot" in globals():
+        enterprise_copilot = None
+    _log_llm_status(PROVIDER_CONFIG, LLM_PROVIDER_CLIENT)
+    return LLM_PROVIDER_CLIENT.health_check(deep=False)
+
+
+http_client = None
+embeddings = None
+LLM_PROVIDER_CLIENT = None
+llm = None
+reload_llm_provider(reset_copilot=False)
+
+
+PROVIDER_ENV_WRITE_ORDER = (
+    "LLM_PROVIDER",
+    "LLM_MODEL",
+    "LLM_API_BASE",
+    "NVIDIA_API_KEY",
+    "LLM_API_KEY",
+    "SQL_COPILOT_REMOTE_LLM",
+    "LLM_TEMPERATURE",
+    "LLM_TOP_P",
+    "LLM_MAX_TOKENS",
+    "LLM_MAX_RETRIES",
+    "LLM_TIMEOUT_SECONDS",
+    "LLM_PROVIDER_FAILURE_COOLDOWN_SECONDS",
+)
+
+EMAIL_ENV_WRITE_ORDER = (
+    "EMAIL_BACKEND",
+    "EMAIL_OUTBOX_DIR",
+    "PASSWORD_RESET_BASE_URL",
+    "SMTP_HOST",
+    "SMTP_PORT",
+    "SMTP_USERNAME",
+    "SMTP_PASSWORD",
+    "SMTP_FROM",
+    "SMTP_USE_TLS",
+    "SMTP_USE_SSL",
+    "SMTP_TIMEOUT_SECONDS",
+)
+
+
+def _provider_default_settings(provider: str) -> dict[str, str]:
+    if provider == "nvidia":
+        return {
+            "model": "openai/gpt-oss-20b",
+            "base_url": "https://integrate.api.nvidia.com/v1",
+        }
+    if provider == "openai":
+        return {"model": "", "base_url": "https://api.openai.com/v1"}
+    if provider == "ollama":
+        return {"model": "llama3.1", "base_url": "http://127.0.0.1:11434/v1"}
+    if provider == "local":
+        return {"model": "deterministic", "base_url": ""}
+    return {"model": PROVIDER_CONFIG.chat_model, "base_url": PROVIDER_CONFIG.base_url}
+
+
+def _provider_api_key_name(provider: str) -> str:
+    if provider == "nvidia":
+        return "NVIDIA_API_KEY"
+    return "LLM_API_KEY"
+
+
+def _read_runtime_env_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return values
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        name, value = stripped.split("=", 1)
+        values[name.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _read_provider_env_file() -> dict[str, str]:
+    return _read_runtime_env_file(RUNTIME_PROVIDER_ENV_FILE)
+
+
+def _clean_provider_env_value(value: object, *, name: str) -> str:
+    text = "" if value is None else str(value).strip()
+    if "\n" in text or "\r" in text:
+        raise ValueError(f"{name} cannot contain line breaks.")
+    return text
+
+
+def _write_runtime_env_file(path: Path, values: dict[str, str], order: tuple[str, ...], header: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        header,
+        "# This file is generated by the Settings page and is ignored by git.",
+    ]
+    for name in order:
+        value = values.get(name)
+        if value is not None and value != "":
+            lines.append(f"{name}={value}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_provider_env_file(values: dict[str, str]) -> None:
+    _write_runtime_env_file(
+        RUNTIME_PROVIDER_ENV_FILE,
+        values,
+        PROVIDER_ENV_WRITE_ORDER,
+        "# SQL Copilot local LLM provider settings.",
+    )
+
+
+def _current_provider_payload(*, deep: bool = False) -> dict[str, object]:
+    status = LLM_PROVIDER_CLIENT.health_check(deep=deep)
+    runtime_values = _read_provider_env_file()
+    return {
+        "selected": PROVIDER_CONFIG.provider,
+        "adapter": PROVIDER_CONFIG.adapter,
+        "remote_enabled": bool(LLM_PROVIDER_CLIENT.available),
+        "api_key_present": bool(PROVIDER_CONFIG.api_key),
+        "embeddings_enabled": bool(embeddings),
+        "chat_model": PROVIDER_CONFIG.chat_model,
+        "embedding_model": PROVIDER_CONFIG.embedding_model,
+        "local_model": PROVIDER_CONFIG.local_model,
+        "supported": list(SUPPORTED_PROVIDERS),
+        "status": status,
+        "timeout_seconds": PROVIDER_CONFIG.timeout_seconds,
+        "max_retries": PROVIDER_CONFIG.max_retries,
+        "temperature": PROVIDER_CONFIG.temperature,
+        "top_p": PROVIDER_CONFIG.top_p,
+        "max_tokens": PROVIDER_CONFIG.max_tokens,
+        "max_generation_retries": PROVIDER_CONFIG.max_generation_retries,
+        "runtime_configured": RUNTIME_PROVIDER_ENV_FILE.exists(),
+        "runtime_config_path": str(RUNTIME_PROVIDER_ENV_FILE),
+        "runtime_config_provider": runtime_values.get("LLM_PROVIDER", ""),
+    }
+
+
+def _apply_runtime_provider_config(payload: dict[str, object]) -> dict[str, object]:
+    provider = _clean_provider_env_value(
+        payload.get("provider") or PROVIDER_CONFIG.provider or "nvidia",
+        name="provider",
+    ).lower()
+    if provider not in SUPPORTED_PROVIDERS:
+        raise ValueError(f"Unsupported provider '{provider}'.")
+
+    defaults = _provider_default_settings(provider)
+    current_runtime_values = _read_provider_env_file()
+    model = _clean_provider_env_value(
+        payload.get("model") or defaults["model"],
+        name="model",
+    )
+    base_url = _clean_provider_env_value(
+        payload.get("base_url") or defaults["base_url"],
+        name="base_url",
+    ).rstrip("/")
+    if provider == "local":
+        model = defaults["model"]
+        base_url = defaults["base_url"]
+    elif provider == "nvidia":
+        if model in {"", "deterministic"}:
+            model = defaults["model"]
+        if not base_url:
+            base_url = defaults["base_url"]
+    elif provider not in {"ollama"} and not model:
+        raise ValueError(f"{provider} model is required.")
+    api_key = _clean_provider_env_value(payload.get("api_key"), name="api_key")
+    api_key_name = _provider_api_key_name(provider)
+    runtime_api_key = "" if provider == "local" else (
+        current_runtime_values.get(api_key_name)
+        or current_runtime_values.get("LLM_API_KEY", "")
+    )
+    environment_api_key = "" if provider == "local" else (
+        (
+            os.getenv("NVIDIA_API_KEY")
+            or os.getenv("LLM_API_KEY")
+            or os.getenv("SQL_COPILOT_LLM_API_KEY")
+            or ""
+        )
+        if provider == "nvidia"
+        else (
+            os.getenv(f"{provider.upper()}_API_KEY")
+            or os.getenv("LLM_API_KEY")
+            or os.getenv("SQL_COPILOT_LLM_API_KEY")
+            or ""
+        )
+    )
+    effective_api_key = api_key or runtime_api_key or environment_api_key
+    if provider not in {"local", "ollama"} and not effective_api_key:
+        raise ValueError(f"{provider} API key is required.")
+
+    values: dict[str, str] = {
+        "LLM_PROVIDER": provider,
+        "LLM_MODEL": model,
+        "LLM_API_BASE": base_url,
+        "SQL_COPILOT_REMOTE_LLM": "0" if provider == "local" else "1",
+        "LLM_TEMPERATURE": _clean_provider_env_value(
+            payload.get("temperature") if payload.get("temperature") is not None else PROVIDER_CONFIG.temperature,
+            name="temperature",
+        ),
+        "LLM_TOP_P": _clean_provider_env_value(
+            payload.get("top_p") if payload.get("top_p") is not None else PROVIDER_CONFIG.top_p,
+            name="top_p",
+        ),
+        "LLM_MAX_TOKENS": _clean_provider_env_value(
+            payload.get("max_tokens") if payload.get("max_tokens") is not None else PROVIDER_CONFIG.max_tokens,
+            name="max_tokens",
+        ),
+        "LLM_MAX_RETRIES": _clean_provider_env_value(
+            payload.get("max_retries") if payload.get("max_retries") is not None else PROVIDER_CONFIG.max_retries,
+            name="max_retries",
+        ),
+        "LLM_TIMEOUT_SECONDS": _clean_provider_env_value(
+            payload.get("timeout_seconds") if payload.get("timeout_seconds") is not None else PROVIDER_CONFIG.timeout_seconds,
+            name="timeout_seconds",
+        ),
+        "LLM_PROVIDER_FAILURE_COOLDOWN_SECONDS": _clean_provider_env_value(
+            payload.get("provider_failure_cooldown_seconds")
+            if payload.get("provider_failure_cooldown_seconds") is not None
+            else os.getenv("LLM_PROVIDER_FAILURE_COOLDOWN_SECONDS", "0"),
+            name="provider_failure_cooldown_seconds",
+        ),
+    }
+    if provider != "local" and (api_key or runtime_api_key):
+        values[api_key_name] = effective_api_key
+
+    _write_provider_env_file(values)
+    if provider == "local":
+        for name in ("LLM_API_KEY", "NVIDIA_API_KEY", "SQL_COPILOT_LLM_API_KEY", "OPENAI_API_KEY"):
+            os.environ.pop(name, None)
+    else:
+        stale_key_names = {"LLM_API_KEY", "NVIDIA_API_KEY", "SQL_COPILOT_LLM_API_KEY", "OPENAI_API_KEY"}
+        stale_key_names.discard(api_key_name)
+        for name in stale_key_names:
+            os.environ.pop(name, None)
+    for name, value in values.items():
+        os.environ[name] = value
+    if provider != "local" and effective_api_key:
+        os.environ[api_key_name] = effective_api_key
+
+    status = reload_llm_provider(reset_copilot=True)
+    return {
+        "provider": _current_provider_payload(deep=bool(payload.get("verify"))),
+        "status": status,
+    }
+
+
+def reload_email_config() -> dict[str, object]:
+    global EMAIL_CONFIG
+    EMAIL_CONFIG = load_email_config(RUNTIME_PATHS.runtime_root, FRONTEND_ORIGIN)
+    return _current_email_payload()
+
+
+def _read_email_env_file() -> dict[str, str]:
+    return _read_runtime_env_file(RUNTIME_EMAIL_ENV_FILE)
+
+
+def _write_email_env_file(values: dict[str, str]) -> None:
+    _write_runtime_env_file(
+        RUNTIME_EMAIL_ENV_FILE,
+        values,
+        EMAIL_ENV_WRITE_ORDER,
+        "# SQL Copilot local email delivery settings.",
+    )
+
+
+def _current_email_payload() -> dict[str, object]:
+    runtime_values = _read_email_env_file()
+    return {
+        "backend": EMAIL_CONFIG.backend,
+        "smtp_configured": EMAIL_CONFIG.smtp_configured,
+        "host": EMAIL_CONFIG.host,
+        "port": EMAIL_CONFIG.port,
+        "username_present": bool(EMAIL_CONFIG.username),
+        "password_present": bool(EMAIL_CONFIG.password),
+        "sender": EMAIL_CONFIG.sender,
+        "use_tls": EMAIL_CONFIG.use_tls,
+        "use_ssl": EMAIL_CONFIG.use_ssl,
+        "timeout_seconds": EMAIL_CONFIG.timeout_seconds,
+        "outbox_dir": str(EMAIL_CONFIG.outbox_dir),
+        "frontend_origin": EMAIL_CONFIG.frontend_origin,
+        "runtime_configured": RUNTIME_EMAIL_ENV_FILE.exists(),
+        "runtime_config_path": str(RUNTIME_EMAIL_ENV_FILE),
+        "runtime_config_backend": runtime_values.get("EMAIL_BACKEND", ""),
+    }
+
+
+def _apply_runtime_email_config(payload: dict[str, object]) -> dict[str, object]:
+    backend = _clean_provider_env_value(payload.get("backend") or EMAIL_CONFIG.backend or "smtp", name="backend").lower()
+    if backend not in {"smtp", "file", "disabled"}:
+        raise ValueError("Email backend must be smtp, file, or disabled.")
+
+    current_runtime_values = _read_email_env_file()
+    host = _clean_provider_env_value(payload.get("host") or EMAIL_CONFIG.host, name="host")
+    port = _clean_provider_env_value(payload.get("port") or EMAIL_CONFIG.port or 587, name="port")
+    username = _clean_provider_env_value(payload.get("username") or EMAIL_CONFIG.username, name="username")
+    password = _clean_provider_env_value(payload.get("password"), name="password")
+    sender = _clean_provider_env_value(payload.get("sender") or EMAIL_CONFIG.sender or username, name="sender")
+    outbox_dir = _clean_provider_env_value(payload.get("outbox_dir") or EMAIL_CONFIG.outbox_dir, name="outbox_dir")
+    frontend_origin = _clean_provider_env_value(
+        payload.get("frontend_origin") or EMAIL_CONFIG.frontend_origin or FRONTEND_ORIGIN,
+        name="frontend_origin",
+    ).rstrip("/")
+    timeout = _clean_provider_env_value(payload.get("timeout_seconds") or EMAIL_CONFIG.timeout_seconds, name="timeout_seconds")
+    use_tls = "1" if bool(payload.get("use_tls", EMAIL_CONFIG.use_tls)) else "0"
+    use_ssl = "1" if bool(payload.get("use_ssl", EMAIL_CONFIG.use_ssl)) else "0"
+
+    try:
+        int(port)
+    except ValueError as exc:
+        raise ValueError("SMTP port must be a number.") from exc
+    try:
+        float(timeout)
+    except ValueError as exc:
+        raise ValueError("SMTP timeout must be a number.") from exc
+
+    effective_password = password or current_runtime_values.get("SMTP_PASSWORD", "") or os.getenv("SMTP_PASSWORD", "")
+    if backend == "smtp" and not host:
+        raise ValueError("SMTP host is required for real password reset email.")
+    if backend == "smtp" and not sender:
+        raise ValueError("SMTP from address is required for real password reset email.")
+
+    values = {
+        "EMAIL_BACKEND": backend,
+        "EMAIL_OUTBOX_DIR": outbox_dir,
+        "PASSWORD_RESET_BASE_URL": frontend_origin,
+        "SMTP_HOST": host,
+        "SMTP_PORT": port,
+        "SMTP_USERNAME": username,
+        "SMTP_FROM": sender,
+        "SMTP_USE_TLS": use_tls,
+        "SMTP_USE_SSL": use_ssl,
+        "SMTP_TIMEOUT_SECONDS": timeout,
+    }
+    if password or current_runtime_values.get("SMTP_PASSWORD"):
+        values["SMTP_PASSWORD"] = effective_password
+
+    _write_email_env_file(values)
+    for name, value in values.items():
+        os.environ[name] = value
+    if effective_password:
+        os.environ["SMTP_PASSWORD"] = effective_password
+    email_status = reload_email_config()
+    delivery = None
+    test_recipient = _clean_provider_env_value(payload.get("test_recipient"), name="test_recipient")
+    if bool(payload.get("verify")) and test_recipient:
+        delivery = send_test_email(EMAIL_CONFIG, test_recipient)
+    return {
+        "email": email_status,
+        "delivery": delivery,
+    }
 
 
  
@@ -317,8 +778,11 @@ schema_tables: set[str] = set()
 schema_columns: dict[str, set[str]] = {}
 schema_column_order: dict[str, list[str]] = {}
 schema_column_types: dict[str, dict] = {}
+schema_column_descriptions: dict[str, dict[str, str]] = {}
+schema_table_metadata: dict[str, dict[str, object]] = {}
 schema_graph: dict[str, list[tuple]] = {}
 virtual_schema_columns: set[tuple[str, str]] = set()
+dynamic_schema_tables: set[str] = set()
 
 table_documents: list[Document] = []
 column_documents: list[Document] = []
@@ -331,16 +795,19 @@ for table_name, group in df.groupby("Table Name"):
 
     cols: set[str] = set()
     col_types: dict = {}
+    col_descriptions: dict[str, str] = {}
     col_lines = ""
 
     for _, row in group.iterrows():
         column_display = str(row["Column Name"]).strip()
         c_lower = column_display.lower()
+        description = str(row["Description"])
         cols.add(c_lower)
         col_types[c_lower] = row["Data Type"]
+        col_descriptions[c_lower] = description
         col_lines += (
             f"  - {column_display} ({row['Data Type']}): "
-            f"{row['Description']}\n"
+            f"{description}\n"
         )
         col_to_tables.setdefault(c_lower, []).append(t_lower)
 
@@ -348,7 +815,7 @@ for table_name, group in df.groupby("Table Name"):
             page_content=(
                 f"Table: {table_display} | "
                 f"Column: {column_display} ({row['Data Type']}) | "
-                f"Meaning: {row['Description']}"
+                f"Meaning: {description}"
             ),
             metadata={"table": table_display, "column": column_display},
         ))
@@ -356,6 +823,19 @@ for table_name, group in df.groupby("Table Name"):
     schema_columns[t_lower] = cols
     schema_column_order[t_lower] = [str(col).strip().lower() for col in group["Column Name"]]
     schema_column_types[t_lower] = col_types
+    schema_column_descriptions[t_lower] = col_descriptions
+    schema_table_metadata[t_lower] = {
+        "domain": "Core Copilot Schema",
+        "purpose": str(group["What this table stores"].iloc[0]).strip()
+        or "Excel-backed schema table used by the active SQL copilot.",
+        "owner": "data-platform",
+        "tags": ["core", "excel"],
+        "version": "1.0.0",
+        "source": "excel",
+        "last_updated": "2026-06-12",
+        "business_glossary": {},
+        "aliases": [table_display],
+    }
 
     table_documents.append(Document(
         page_content=(
@@ -386,6 +866,7 @@ for table, extensions in VIRTUAL_SCHEMA_EXTENSIONS.items():
         schema_columns[table].add(column)
         schema_column_order[table].append(column)
         schema_column_types[table][column] = data_type
+        schema_column_descriptions.setdefault(table, {})[column] = description
         virtual_schema_columns.add((table, column))
         col_to_tables.setdefault(column, []).append(table)
         column_documents.append(Document(
@@ -471,9 +952,475 @@ def infer_foreign_keys_from_schema() -> int:
     return inferred
 
 
+def _normalise_identifier(value: object, fallback: str = "field") -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9_]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    if not text:
+        return fallback
+    if text[0].isdigit():
+        text = f"{fallback}_{text}"
+    return text
+
+
+def _ensure_list(value: object) -> list[object]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple) or isinstance(value, set):
+        return list(value)
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return [value]
+
+
+def _column_payload(column: object, ordinal: int = 0) -> dict[str, object]:
+    if isinstance(column, dict):
+        raw_name = column.get("name") or column.get("column_name") or column.get("field")
+        name = _normalise_identifier(raw_name, f"column_{ordinal + 1}")
+        data_type = str(column.get("data_type") or column.get("type") or "TEXT").upper()
+        description = str(column.get("description") or column.get("purpose") or "").strip()
+        return {
+            "name": name,
+            "data_type": data_type,
+            "description": description or f"Inferred column {name.replace('_', ' ')}.",
+            "is_pk": bool(column.get("is_pk") or column.get("primary_key")),
+            "is_fk": bool(column.get("is_fk") or column.get("foreign_key") or column.get("references")),
+            "references_table": _normalise_identifier(column.get("references_table"), "")
+            if column.get("references_table") else "",
+            "references_column": _normalise_identifier(column.get("references_column"), "")
+            if column.get("references_column") else "",
+        }
+    name = _normalise_identifier(column, f"column_{ordinal + 1}")
+    return {
+        "name": name,
+        "data_type": "TEXT",
+        "description": f"Inferred column {name.replace('_', ' ')}.",
+        "is_pk": ordinal == 0 and name.endswith("_id"),
+        "is_fk": False,
+        "references_table": "",
+        "references_column": "",
+    }
+
+
+def _relationship_payload(relationship: object, default_from_table: str) -> dict[str, str] | None:
+    if isinstance(relationship, str):
+        target = relationship.strip()
+        if not target:
+            return None
+        if "." in target:
+            to_table, to_column = target.split(".", 1)
+        else:
+            to_table = target
+            to_column = f"{_normalise_identifier(target)}_id"
+        to_table = _normalise_identifier(to_table, "target_table")
+        to_column = _normalise_identifier(to_column, "target_id")
+        return {
+            "from_table": default_from_table,
+            "from_column": to_column,
+            "to_table": to_table,
+            "to_column": to_column,
+        }
+    if not isinstance(relationship, dict):
+        return None
+    from_table = _normalise_identifier(
+        relationship.get("from_table") or relationship.get("source_table") or default_from_table,
+        default_from_table,
+    )
+    from_column = _normalise_identifier(
+        relationship.get("from_column") or relationship.get("source_column") or relationship.get("column"),
+        "source_id",
+    )
+    to_table = _normalise_identifier(
+        relationship.get("to_table") or relationship.get("target_table") or relationship.get("table"),
+        "target_table",
+    )
+    to_column = _normalise_identifier(
+        relationship.get("to_column") or relationship.get("target_column") or relationship.get("references_column"),
+        "target_id",
+    )
+    if not from_column or not to_table or not to_column:
+        return None
+    return {
+        "from_table": from_table,
+        "from_column": from_column,
+        "to_table": to_table,
+        "to_column": to_column,
+    }
+
+
+def _table_documents_for(table: str) -> tuple[Document, list[Document]]:
+    metadata = schema_table_metadata.get(table, {})
+    purpose = str(metadata.get("purpose") or "Dynamic enterprise schema table.")
+    lines = []
+    column_docs = []
+    for column in schema_column_order.get(table, []):
+        data_type = str(schema_column_types.get(table, {}).get(column, "TEXT"))
+        description = schema_column_descriptions.get(table, {}).get(
+            column,
+            f"Column {column.replace('_', ' ')}.",
+        )
+        lines.append(f"  - {column} ({data_type}): {description}")
+        column_docs.append(Document(
+            page_content=(
+                f"Table: {table} | Column: {column} ({data_type}) | "
+                f"Meaning: {description}"
+            ),
+            metadata={"table": table, "column": column, "source": metadata.get("source", "dynamic")},
+        ))
+    table_doc = Document(
+        page_content=(
+            f"Table: {table}\n"
+            f"Description: {purpose}\n"
+            f"Domain: {metadata.get('domain', 'Dynamic Enterprise Schema')}\n\n"
+            f"Columns:\n" + "\n".join(lines)
+        ),
+        metadata={"table": table, "source": metadata.get("source", "dynamic")},
+    )
+    return table_doc, column_docs
+
+
+def _replace_schema_documents(table: str) -> None:
+    global table_documents, column_documents
+    table_documents = [
+        doc for doc in table_documents
+        if str(doc.metadata.get("table", "")).lower() != table
+    ]
+    column_documents = [
+        doc for doc in column_documents
+        if str(doc.metadata.get("table", "")).lower() != table
+    ]
+    if table not in schema_columns:
+        return
+    table_doc, column_docs = _table_documents_for(table)
+    table_documents.append(table_doc)
+    column_documents.extend(column_docs)
+
+
+def _save_dynamic_schema() -> None:
+    DYNAMIC_SCHEMA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "tables": [],
+    }
+    for table in sorted(dynamic_schema_tables):
+        if table not in schema_tables:
+            continue
+        metadata = schema_table_metadata.get(table, {})
+        payload["tables"].append({
+            "name": table,
+            "domain": metadata.get("domain", "Dynamic Enterprise Schema"),
+            "purpose": metadata.get("purpose", "Dynamic enterprise schema table."),
+            "owner": metadata.get("owner", "data-platform"),
+            "tags": metadata.get("tags", []),
+            "version": metadata.get("version", "1.0.0"),
+            "source": metadata.get("source", "dynamic"),
+            "last_updated": metadata.get("last_updated"),
+            "business_glossary": metadata.get("business_glossary", {}),
+            "aliases": metadata.get("aliases", []),
+            "indexes": metadata.get("indexes", []),
+            "columns": [
+                {
+                    "name": column,
+                    "data_type": schema_column_types.get(table, {}).get(column, "TEXT"),
+                    "description": schema_column_descriptions.get(table, {}).get(column, ""),
+                    "is_pk": column == schema_column_order.get(table, [""])[0] and column.endswith("_id"),
+                    "is_fk": any(rel[0] == column for rel in schema_graph.get(table, [])),
+                }
+                for column in schema_column_order.get(table, [])
+            ],
+            "relationships": [
+                {
+                    "from_table": table,
+                    "from_column": from_column,
+                    "to_table": to_table,
+                    "to_column": to_column,
+                }
+                for from_column, to_table, to_column in schema_graph.get(table, [])
+            ],
+        })
+    DYNAMIC_SCHEMA_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def schema_catalog_entry(table: str) -> dict[str, object]:
+    metadata = schema_table_metadata.get(table, {})
+    columns = [
+        {
+            "name": column,
+            "data_type": str(schema_column_types.get(table, {}).get(column, "")),
+            "description": schema_column_descriptions.get(table, {}).get(column, ""),
+            "is_pk": column.endswith("_id") and column == schema_column_order.get(table, [""])[0],
+            "is_fk": any(rel[0] == column for rel in schema_graph.get(table, [])),
+            "is_virtual": (table, column) in virtual_schema_columns,
+        }
+        for column in schema_column_order.get(table, [])
+    ]
+    relationships = [
+        {
+            "from_table": table,
+            "from_column": from_column,
+            "to_table": to_table,
+            "to_column": to_column,
+        }
+        for from_column, to_table, to_column in schema_graph.get(table, [])
+    ]
+    indexes = metadata.get("indexes") or [
+        column["name"]
+        for column in columns
+        if column["is_pk"] or column["is_fk"] or column["name"] in {"status", "created_at"}
+    ]
+    return {
+        "name": table,
+        "domain": metadata.get("domain", "Core Copilot Schema"),
+        "purpose": metadata.get("purpose", "Schema table used by the active SQL copilot."),
+        "row_count": "live",
+        "columns": columns,
+        "relationships": relationships,
+        "indexes": indexes,
+        "owner": metadata.get("owner", "data-platform"),
+        "tags": metadata.get("tags", []),
+        "version": metadata.get("version", "1.0.0"),
+        "source": metadata.get("source", "excel"),
+        "business_glossary": metadata.get("business_glossary", {}),
+        "aliases": metadata.get("aliases", []),
+        "last_updated": metadata.get("last_updated", "2026-06-12"),
+    }
+
+
+def _upsert_schema_table(
+    payload: dict[str, object],
+    *,
+    source: str = "dynamic",
+    persist: bool = True,
+    refresh: bool = True,
+) -> dict[str, object]:
+    table = _normalise_identifier(payload.get("name") or payload.get("table_name"), "dynamic_table")
+    if table in schema_tables and table not in dynamic_schema_tables:
+        raise ValueError(f"'{table}' is an Excel-backed table. Create a new dynamic table instead.")
+
+    raw_columns = payload.get("columns") or []
+    if isinstance(raw_columns, str):
+        raw_columns = [item.strip() for item in raw_columns.split(",") if item.strip()]
+    columns = [
+        _column_payload(column, index)
+        for index, column in enumerate(raw_columns if isinstance(raw_columns, list) else [])
+    ]
+    if not columns:
+        base = table[:-1] if table.endswith("s") else table
+        columns = [
+            {"name": f"{base}_id", "data_type": "INTEGER", "description": f"Primary key for {table}.", "is_pk": True},
+            {"name": "name", "data_type": "TEXT", "description": f"Business label for {table}.", "is_pk": False},
+            {"name": "status", "data_type": "TEXT", "description": "Lifecycle status.", "is_pk": False},
+        ]
+
+    for entries in col_to_tables.values():
+        while table in entries:
+            entries.remove(table)
+
+    schema_tables.add(table)
+    dynamic_schema_tables.add(table)
+    schema_columns[table] = {str(column["name"]) for column in columns}
+    schema_column_order[table] = [str(column["name"]) for column in columns]
+    schema_column_types[table] = {
+        str(column["name"]): str(column.get("data_type") or "TEXT")
+        for column in columns
+    }
+    schema_column_descriptions[table] = {
+        str(column["name"]): str(column.get("description") or "")
+        for column in columns
+    }
+    for column in schema_column_order[table]:
+        col_to_tables.setdefault(column, []).append(table)
+
+    metadata = dict(payload.get("metadata") or {})
+    domain = str(payload.get("domain") or metadata.get("domain") or "Dynamic Enterprise Schema")
+    purpose = str(
+        payload.get("purpose")
+        or payload.get("business_purpose")
+        or metadata.get("purpose")
+        or f"Dynamic table for {table.replace('_', ' ')}."
+    )
+    indexes = payload.get("indexes") or metadata.get("indexes") or [
+        column["name"]
+        for column in columns
+        if column.get("is_pk") or column.get("is_fk") or column["name"] in {"status", "created_at"}
+    ]
+    schema_table_metadata[table] = {
+        "domain": domain,
+        "purpose": purpose,
+        "owner": str(payload.get("owner") or metadata.get("owner") or "data-platform"),
+        "tags": _ensure_list(payload.get("tags") or metadata.get("tags") or ["dynamic"]),
+        "version": str(payload.get("version") or metadata.get("version") or "1.0.0"),
+        "source": source,
+        "last_updated": datetime.now(timezone.utc).date().isoformat(),
+        "business_glossary": payload.get("business_glossary") or metadata.get("business_glossary") or {},
+        "aliases": _ensure_list(payload.get("aliases") or metadata.get("aliases") or [table.replace("_", " ")]),
+        "indexes": list(indexes),
+    }
+
+    schema_graph[table] = []
+    raw_relationships = payload.get("relationships") or []
+    if isinstance(raw_relationships, str):
+        raw_relationships = [
+            item.strip() for item in raw_relationships.split(",") if item.strip()
+        ]
+    for column in columns:
+        if column.get("references_table") and column.get("references_column"):
+            raw_relationships.append({
+                "from_table": table,
+                "from_column": column["name"],
+                "to_table": column["references_table"],
+                "to_column": column["references_column"],
+            })
+    for relationship in raw_relationships if isinstance(raw_relationships, list) else []:
+        parsed = _relationship_payload(relationship, table)
+        if not parsed or parsed["from_table"] != table:
+            continue
+        if parsed["to_table"] not in schema_tables:
+            continue
+        if parsed["to_column"] not in schema_columns.get(parsed["to_table"], set()):
+            continue
+        if parsed["from_column"] not in schema_columns.get(table, set()):
+            schema_columns[table].add(parsed["from_column"])
+            schema_column_order[table].append(parsed["from_column"])
+            schema_column_types[table][parsed["from_column"]] = "INTEGER"
+            schema_column_descriptions[table][parsed["from_column"]] = (
+                f"Foreign key to {parsed['to_table']}.{parsed['to_column']}."
+            )
+        _register_fk(table, parsed["from_column"], parsed["to_table"], parsed["to_column"])
+
+    _replace_schema_documents(table)
+    if persist:
+        _save_dynamic_schema()
+    if refresh:
+        refresh_metadata_engine(reason=f"schema_upsert:{table}")
+    return schema_catalog_entry(table)
+
+
+def _register_builtin_schema_table(payload: dict[str, object]) -> dict[str, object]:
+    table = _normalise_identifier(payload.get("name") or payload.get("table_name"), "builtin_table")
+    raw_columns = payload.get("columns") or []
+    columns = [
+        _column_payload(column, index)
+        for index, column in enumerate(raw_columns if isinstance(raw_columns, list) else [])
+    ]
+    if not columns:
+        return {}
+
+    for entries in col_to_tables.values():
+        while table in entries:
+            entries.remove(table)
+
+    schema_tables.add(table)
+    dynamic_schema_tables.discard(table)
+    schema_columns[table] = {str(column["name"]) for column in columns}
+    schema_column_order[table] = [str(column["name"]) for column in columns]
+    schema_column_types[table] = {
+        str(column["name"]): str(column.get("data_type") or "TEXT")
+        for column in columns
+    }
+    schema_column_descriptions[table] = {
+        str(column["name"]): str(column.get("description") or "")
+        for column in columns
+    }
+    for column in schema_column_order[table]:
+        col_to_tables.setdefault(column, []).append(table)
+
+    metadata = dict(payload.get("metadata") or {})
+    schema_table_metadata[table] = {
+        "domain": str(payload.get("domain") or metadata.get("domain") or "Built-in Enterprise Schema"),
+        "purpose": str(payload.get("purpose") or metadata.get("purpose") or f"Built-in table for {table}."),
+        "owner": str(payload.get("owner") or metadata.get("owner") or "data-platform"),
+        "tags": _ensure_list(payload.get("tags") or metadata.get("tags") or ["builtin"]),
+        "version": str(payload.get("version") or metadata.get("version") or "1.0.0"),
+        "source": str(payload.get("source") or metadata.get("source") or "builtin"),
+        "last_updated": "2026-08-11",
+        "business_glossary": payload.get("business_glossary") or metadata.get("business_glossary") or {},
+        "aliases": _ensure_list(payload.get("aliases") or metadata.get("aliases") or [table.replace("_", " ")]),
+        "indexes": list(payload.get("indexes") or metadata.get("indexes") or []),
+    }
+    schema_graph[table] = []
+    _replace_schema_documents(table)
+    return schema_catalog_entry(table)
+
+
+def register_custody_balance_schema() -> int:
+    loaded = 0
+    for table_payload in CUSTODY_BALANCE_SCHEMA_TABLES:
+        if _register_builtin_schema_table(table_payload):
+            loaded += 1
+    for relationship in CUSTODY_BALANCE_RELATIONSHIPS:
+        parsed = _relationship_payload(relationship, str(relationship.get("from_table") or ""))
+        if not parsed:
+            continue
+        _register_fk(
+            parsed["from_table"],
+            parsed["from_column"],
+            parsed["to_table"],
+            parsed["to_column"],
+        )
+    return loaded
+
+
+def _delete_schema_table(table_name: str) -> tuple[bool, str]:
+    table = _normalise_identifier(table_name, "dynamic_table")
+    if table not in schema_tables:
+        return False, "schema table not found"
+    if table not in dynamic_schema_tables:
+        return False, "Excel-backed schema tables are read-only"
+
+    schema_tables.discard(table)
+    dynamic_schema_tables.discard(table)
+    schema_columns.pop(table, None)
+    schema_column_order.pop(table, None)
+    schema_column_types.pop(table, None)
+    schema_column_descriptions.pop(table, None)
+    schema_table_metadata.pop(table, None)
+    schema_graph.pop(table, None)
+    for from_table, relationships in list(schema_graph.items()):
+        schema_graph[from_table] = [
+            relation for relation in relationships if relation[1] != table
+        ]
+    for entries in col_to_tables.values():
+        while table in entries:
+            entries.remove(table)
+    _replace_schema_documents(table)
+    _save_dynamic_schema()
+    refresh_metadata_engine(reason=f"schema_delete:{table}")
+    return True, table
+
+
+def _load_dynamic_schema() -> int:
+    if not DYNAMIC_SCHEMA_FILE.exists():
+        return 0
+    try:
+        payload = json.loads(DYNAMIC_SCHEMA_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        log_step(f"[schema] Dynamic schema file could not be read: {exc}")
+        return 0
+    loaded = 0
+    for table_payload in payload.get("tables", []):
+        if not isinstance(table_payload, dict):
+            continue
+        try:
+            _upsert_schema_table(table_payload, source="dynamic", persist=False, refresh=False)
+            loaded += 1
+        except Exception as exc:
+            log_step(f"[schema] Dynamic table skipped: {exc}")
+    return loaded
+
+
 inferred_fk_count = infer_foreign_keys_from_schema()
 if inferred_fk_count:
     log_step(f"[schema] Inferred {inferred_fk_count} FK relationships from schema descriptions")
+loaded_dynamic_count = _load_dynamic_schema()
+if loaded_dynamic_count:
+    log_step(f"[schema] Loaded {loaded_dynamic_count} dynamic schema tables")
+builtin_custody_count = register_custody_balance_schema()
+if builtin_custody_count:
+    log_step(f"[schema] Registered {builtin_custody_count} custody balance schema tables")
 
 log_step(f"[schema] {len(schema_tables)} tables | {len(column_documents)} columns")
 
@@ -519,6 +1466,61 @@ if BM25Retriever:
 else:
     bm25_ret = None
     log_step("[deps] BM25Retriever unavailable; BM25 disabled")
+
+metadata_refresh_status: dict[str, object] = {
+    "version": 1,
+    "last_refreshed_at": datetime.now(timezone.utc).isoformat(),
+    "reason": "startup",
+    "bm25_enabled": bool(bm25_ret),
+    "faiss_enabled": bool(table_vs and column_vs),
+    "tables_count": len(schema_tables),
+    "columns_count": len(column_documents),
+}
+
+
+def refresh_metadata_engine(reason: str = "manual") -> dict[str, object]:
+    global table_vs, column_vs, faiss_table_ret, faiss_col_ret, bm25_ret, enterprise_copilot
+
+    if BM25Retriever:
+        bm25_ret = BM25Retriever.from_documents(table_documents)
+        bm25_ret.k = 3
+
+    faiss_ready = False
+    if FAISS is not None and embeddings is not None:
+        try:
+            table_vs = FAISS.from_documents(table_documents, embeddings)
+            column_vs = FAISS.from_documents(column_documents, embeddings)
+            table_vs.save_local(FAISS_TABLE_INDEX_PATH)
+            column_vs.save_local(FAISS_COL_INDEX_PATH)
+            faiss_table_ret = table_vs.as_retriever(search_kwargs={"k": 3})
+            faiss_col_ret = column_vs.as_retriever(search_kwargs={"k": 5})
+            faiss_ready = True
+        except Exception as exc:
+            faiss_table_ret = None
+            faiss_col_ret = None
+            log_step(f"[metadata] FAISS refresh skipped: {exc}")
+    else:
+        faiss_table_ret = None
+        faiss_col_ret = None
+
+    if "sync_dynamic_query_hints" in globals():
+        sync_dynamic_query_hints()
+    enterprise_copilot = None
+    metadata_refresh_status.update({
+        "version": int(metadata_refresh_status.get("version", 0)) + 1,
+        "last_refreshed_at": datetime.now(timezone.utc).isoformat(),
+        "reason": reason,
+        "bm25_enabled": bool(bm25_ret),
+        "faiss_enabled": faiss_ready,
+        "tables_count": len(schema_tables),
+        "columns_count": len(column_documents),
+        "dynamic_tables_count": len(dynamic_schema_tables),
+    })
+    log_step(
+        "[metadata] Refreshed schema engine "
+        f"v{metadata_refresh_status['version']} ({reason})"
+    )
+    return dict(metadata_refresh_status)
 
 
  
@@ -686,6 +1688,7 @@ def rewrite_query(query: str) -> str:
 _DANGEROUS = {
     "delete", "drop", "remove", "update", "truncate",
     "alter", "grant", "revoke", "exec", "execute",
+    "insert", "create", "merge", "call",
 }
 _META = {
     "schema", "tables", "columns", "describe",
@@ -695,7 +1698,12 @@ _META = {
 
 def classify_query(query: str) -> str:
     q = query.lower()
-    if any(w in q for w in _DANGEROUS):
+    stripped = q.strip()
+    if ";" in stripped.rstrip(";"):
+        return "DANGEROUS"
+    if re.search(r"\b(stored\s+procedure|procedure|proc)\b", q):
+        return "DANGEROUS"
+    if any(re.search(rf"\b{re.escape(w)}\b", q) for w in _DANGEROUS):
         return "DANGEROUS"
     if any(w in q for w in _META):
         return "META"
@@ -963,10 +1971,74 @@ def load_ppo_agent():
     return ppo_agent
 
 
+def _matched_business_logic_rule(insights: dict | None) -> str:
+    if not isinstance(insights, dict):
+        return ""
+    top_level_rule = insights.get("business_logic_rule")
+    if top_level_rule:
+        return str(top_level_rule)
+    coverage_report = insights.get("coverage_report")
+    if not isinstance(coverage_report, dict):
+        return ""
+    business_logic = coverage_report.get("business_logic")
+    if not isinstance(business_logic, dict):
+        return ""
+    return str(business_logic.get("matched_rule") or "")
+
+
 def optimize_with_rl_feedback(query: str, sql: str, insights: dict) -> dict:
     original_sql = sql
     optimized_sql = sql
     action_name = "keep_current_query"
+    matched_rule = _matched_business_logic_rule(insights)
+
+    if matched_rule:
+        is_valid, validation_message = validate_sql(original_sql)
+        stats = execute_sql_for_stats(DB_PATH, original_sql)
+        reward = compute_reward(is_valid, stats)
+        existing_confidence = insights.get("confidence", 0) if isinstance(insights, dict) else 0
+        try:
+            confidence = float(existing_confidence)
+        except (TypeError, ValueError):
+            confidence = confidence_score(original_sql, is_valid, query)
+        if not is_valid:
+            confidence = min(confidence, confidence_score(original_sql, is_valid, query))
+
+        store_experience(
+            FEEDBACK_DB_PATH,
+            query,
+            original_sql,
+            reward,
+            stats.execution_time,
+            validation_message,
+        )
+
+        updated_insights = dict(insights)
+        updated_insights.update({
+            "confidence": confidence,
+            "valid": is_valid,
+            "validation": validation_message,
+            "business_logic_rule": matched_rule,
+            "rl": {
+                "enabled": RL_ENABLED,
+                "model_loaded": False,
+                "action": "skipped_business_logic_rule",
+                "original_sql": original_sql,
+                "optimized_sql": original_sql,
+                "reward_score": reward,
+                "confidence_score": confidence,
+                "execution_time": stats.execution_time,
+                "row_count": stats.row_count,
+                "optimization_reasoning": (
+                    f"RL rewrite skipped because {matched_rule} is a registered "
+                    "business-logic rule with schema-bound SQL."
+                ),
+            },
+        })
+        return {
+            "sql": original_sql,
+            "insights": updated_insights,
+        }
 
     agent = load_ppo_agent()
     if agent is not None:
@@ -993,7 +2065,17 @@ def optimize_with_rl_feedback(query: str, sql: str, insights: dict) -> dict:
     is_valid, validation_message = validate_sql(optimized_sql)
     stats = execute_sql_for_stats(DB_PATH, optimized_sql)
     reward = compute_reward(is_valid, stats)
-    confidence = confidence_score(optimized_sql, is_valid, query)
+    if action_name == "keep_current_query" or original_sql == optimized_sql:
+        try:
+            confidence = float(insights.get("confidence", 0))
+        except (TypeError, ValueError):
+            confidence = confidence_score(optimized_sql, is_valid, query)
+        if not confidence:
+            confidence = confidence_score(optimized_sql, is_valid, query)
+    else:
+        confidence = confidence_score(optimized_sql, is_valid, query)
+    if not is_valid:
+        confidence = min(confidence, confidence_score(optimized_sql, is_valid, query))
 
     store_experience(
         FEEDBACK_DB_PATH,
@@ -1221,6 +2303,9 @@ PRIMARY_LABEL_COLUMNS = {
     "sprints": "sprint_name",
     "deployments": "version",
 }
+TABLE_ALIASES.update(CUSTODY_BALANCE_ALIASES)
+DEFAULT_DISPLAY_COLUMNS.update(CUSTODY_BALANCE_DEFAULT_DISPLAY_COLUMNS)
+PRIMARY_LABEL_COLUMNS.update(CUSTODY_BALANCE_LABEL_COLUMNS)
 
 COLUMN_QUERY_HINTS = {
     "employees": {
@@ -1328,6 +2413,13 @@ COLUMN_QUERY_HINTS = {
     },
 }
 
+for table, hints in CUSTODY_BALANCE_TABLE_HINTS.items():
+    TABLE_QUERY_HINTS.setdefault(table, set()).update(hints)
+for table, columns in CUSTODY_BALANCE_COLUMN_HINTS.items():
+    COLUMN_QUERY_HINTS.setdefault(table, {})
+    for column, hints in columns.items():
+        COLUMN_QUERY_HINTS[table].setdefault(column, set()).update(hints)
+
 VALUE_FILTERS = {
     "employees": {
         "status": {
@@ -1411,6 +2503,15 @@ VALUE_FILTERS = {
         },
     },
 }
+VALUE_FILTERS["custody_block"] = {
+    "block_status": {
+        "active": "ACTIVE",
+        "released": "RELEASED",
+        "cancelled": "CANCELLED",
+        "canceled": "CANCELLED",
+        "expired": "EXPIRED",
+    }
+}
 
 DATE_ORDER_COLUMNS = {
     "employees": "joining_date",
@@ -1423,6 +2524,46 @@ DATE_ORDER_COLUMNS = {
     "sprints": "start_date",
     "deployments": "deployed_at",
 }
+DATE_ORDER_COLUMNS.update({
+    "portfolio": "created_datetime",
+    "custody_position": "last_carry_forward_date",
+    "security_movement": "trade_date",
+    "custody_block": "block_valid_from_date",
+})
+
+
+def _hint_tokens(text: str) -> set[str]:
+    return set(re.findall(r"[a-z][a-z0-9_]*", text.lower().replace("-", " ")))
+
+
+def sync_dynamic_query_hints() -> None:
+    for table in sorted(dynamic_schema_tables):
+        if table not in schema_tables:
+            continue
+        metadata = schema_table_metadata.get(table, {})
+        hint_terms = _hint_tokens(table.replace("_", " "))
+        hint_terms.update(_hint_tokens(str(metadata.get("purpose", ""))))
+        for alias in _ensure_list(metadata.get("aliases")):
+            hint_terms.add(str(alias).lower())
+            hint_terms.update(_hint_tokens(str(alias)))
+        TABLE_QUERY_HINTS[table] = {
+            term for term in hint_terms if len(term) > 1
+        } or {table.replace("_", " ")}
+        COLUMN_QUERY_HINTS[table] = {}
+        for column in schema_column_order.get(table, []):
+            description = schema_column_descriptions.get(table, {}).get(column, "")
+            terms = {column, column.replace("_", " ")}
+            terms.update(_hint_tokens(description))
+            COLUMN_QUERY_HINTS[table][column] = {term for term in terms if len(term) > 1}
+        display_columns = schema_column_order.get(table, [])[:6]
+        DEFAULT_DISPLAY_COLUMNS[table] = display_columns
+        label = next(
+            (column for column in display_columns if not column.endswith("_id")),
+            display_columns[0] if display_columns else "",
+        )
+        if label:
+            PRIMARY_LABEL_COLUMNS[table] = label
+        TABLE_ALIASES.setdefault(table, table[:1] or "t")
 
 
 def _normalise_query_text(query: str) -> str:
@@ -2041,6 +3182,7 @@ def generate_sql_fallback(query: str, docs: list[Document] | None = None) -> str
 def get_enterprise_copilot() -> EnterpriseSQLCopilot:
     global enterprise_copilot
     if enterprise_copilot is None:
+        sync_dynamic_query_hints()
         enterprise_copilot = EnterpriseSQLCopilot(
             tables=schema_tables,
             columns=schema_columns,
@@ -2055,12 +3197,34 @@ def get_enterprise_copilot() -> EnterpriseSQLCopilot:
             labels=PRIMARY_LABEL_COLUMNS,
             validator=validate_sql,
             state_db_path=Path(FEEDBACK_DB_PATH),
+            logs_root=RUNTIME_PATHS.logs_root,
+            llm_provider=LLM_PROVIDER_CLIENT,
+            max_generation_retries=MAX_RETRIES,
+            confidence_low_threshold=CONFIDENCE_THRESHOLD,
+            confidence_high_threshold=int(os.getenv("CONFIDENCE_HIGH_THRESHOLD", "90")),
         )
     return enterprise_copilot
 
 
+def get_spider_text_sql_rag() -> SpiderTextSqlRag:
+    global spider_text_sql_rag
+    if spider_text_sql_rag is None:
+        spider_text_sql_rag = SpiderTextSqlRag(SPIDER_TEXT_SQL_FILE)
+        log_step(
+            f"[spider-rag] Loaded {len(spider_text_sql_rag.examples)} text-to-SQL examples "
+            f"from {SPIDER_TEXT_SQL_FILE}"
+        )
+    return spider_text_sql_rag
+
+
 def enterprise_result_to_insights(result) -> dict[str, object]:
     query_type = "Clarification" if result.clarification_required else detect_query_type(result.sql)
+    business_logic = result.coverage_report.get("business_logic", {}) if isinstance(result.coverage_report, dict) else {}
+    business_logic_rule = (
+        str(business_logic.get("matched_rule") or "")
+        if isinstance(business_logic, dict)
+        else ""
+    )
     index_suggestions = [
         item.removeprefix("Index suggested: ").removeprefix("Index suggested for filter: ")
         for item in result.optimizations
@@ -2072,6 +3236,7 @@ def enterprise_result_to_insights(result) -> dict[str, object]:
         "Apply read-only validation",
         "Return projected columns",
     ]
+    fallback_reason = _friendly_llm_fallback_reason(result.llm_trace)
     return {
         "confidence": result.confidence,
         "threshold": 70,
@@ -2106,18 +3271,285 @@ def enterprise_result_to_insights(result) -> dict[str, object]:
         "cost_reduction_percent": 0,
         "index_suggestions": index_suggestions,
         "confidence_breakdown": result.confidence_breakdown,
+        "confidence_evidence": result.confidence_evidence,
         "coverage_report": result.coverage_report,
+        "business_logic_rule": business_logic_rule,
         "agent_telemetry": result.agent_telemetry,
         "execution_trace": result.execution_trace,
         "runtime_metrics": result.runtime_metrics,
         "benchmark_record": result.benchmark_record,
+        "query_complexity": result.query_complexity,
+        "confidence_band": result.confidence_band,
+        "provider_status": result.provider_status,
+        "llm_trace": result.llm_trace,
+        "model_confidence": result.model_confidence,
+        "planner_confidence": result.planner_confidence,
+        "validator_confidence": result.validator_confidence,
+        "coverage_confidence": result.coverage_confidence,
+        "llm_provider": result.llm_trace.get("provider") or result.provider_status.get("provider"),
+        "llm_model": result.llm_trace.get("model") or result.provider_status.get("model"),
+        "fallback_used": bool(result.llm_trace.get("fallback_used")),
+        "fallback_reason": fallback_reason,
+        "repair_attempts": int(result.llm_trace.get("retry_count") or 0),
         "cache_hit": result.cache_hit,
     }
 
 
- 
+def _friendly_llm_fallback_reason(llm_trace: dict[str, object]) -> str:
+    reason = str(llm_trace.get("fallback_reason") or "")
+    if not reason:
+        return ""
+    messages = {
+        "provider_error": "NVIDIA assist could not connect; deterministic SQL was used.",
+        "timeout": "NVIDIA assist timed out; deterministic SQL was used.",
+        "rate_limit": "NVIDIA assist was rate limited; deterministic SQL was used.",
+        "configuration": "NVIDIA assist needs a valid provider configuration; deterministic SQL was used.",
+        "network_blocked": "Backend network access to NVIDIA is blocked; deterministic SQL was used.",
+        "provider_unavailable": "NVIDIA assist is unavailable; deterministic SQL was used.",
+        "candidate_failed_validation": "NVIDIA candidate failed deterministic validation; deterministic SQL was used.",
+        "generic_candidate_failed_validation": "NVIDIA generic candidate failed read-only validation; nearest Spider example was used.",
+        "plan_validation_failed": "The deterministic plan was not safe for LLM generation; deterministic fallback was used.",
+        "clarification_required_before_llm": "Clarification is required before LLM assist can run.",
+    }
+    return messages.get(reason, "LLM assist was skipped; deterministic SQL was used.")
+
+
+def _result_has_schema_anchor(result) -> bool:
+    if result.selected_tables or result.selected_columns:
+        return True
+    plan = result.plan or {}
+    if isinstance(plan, dict):
+        if str(plan.get("main_table") or "").strip():
+            return True
+        for key in ("selected_columns", "joins", "filters", "aggregations", "group_by"):
+            if plan.get(key):
+                return True
+    return False
+
+
+def _schema_terms_for_table(table: str) -> set[str]:
+    terms = set(re.findall(r"[a-z][a-z0-9_]*", table.lower().replace("_", " ")))
+    for hint in TABLE_QUERY_HINTS.get(table, set()):
+        terms.update(re.findall(r"[a-z][a-z0-9_]*", str(hint).lower().replace("_", " ")))
+    return terms
+
+
+def _schema_terms_for_column(table: str, column: str) -> set[str]:
+    terms = set(re.findall(r"[a-z][a-z0-9_]*", column.lower().replace("_", " ")))
+    for hint in COLUMN_QUERY_HINTS.get(table, {}).get(column, set()):
+        terms.update(re.findall(r"[a-z][a-z0-9_]*", str(hint).lower().replace("_", " ")))
+    return terms
+
+
+def _query_mentions_selected_schema(user_query: str, result) -> bool:
+    query_terms = set(re.findall(r"[a-z][a-z0-9_]*", user_query.lower().replace("_", " ")))
+    generic_terms = {
+        "all", "any", "by", "count", "date", "display", "find", "get", "group", "how",
+        "id", "list", "many", "name", "names", "number", "order", "ordered", "rank",
+        "show", "sort", "sorted", "the", "top", "total", "what", "which",
+    }
+    for table in result.selected_tables or []:
+        if query_terms & (_schema_terms_for_table(table) - generic_terms):
+            return True
+    for item in result.selected_columns or []:
+        table, _, column = str(item).partition(".")
+        if table and column and query_terms & (_schema_terms_for_column(table, column) - generic_terms):
+            return True
+    return False
+
+
+def _clarification_mentions_known_schema(result) -> bool:
+    options = [str(item).lower() for item in (result.clarification_options or [])]
+    if not options:
+        return False
+    for option in options:
+        for table in schema_tables:
+            table_name = table.lower()
+            if f"{table_name}." in option:
+                return True
+            if re.search(rf"(?<!\w){re.escape(table_name)}(?!\w)", option):
+                return True
+    return False
+
+
+def _should_use_spider_generic_rag(user_query: str, result) -> bool:
+    if not result.clarification_required:
+        return False
+    if result.confidence >= CONFIDENCE_THRESHOLD:
+        return False
+    if _result_has_schema_anchor(result) and _query_mentions_selected_schema(user_query, result):
+        return False
+    if _clarification_mentions_known_schema(result):
+        return False
+    rag = get_spider_text_sql_rag()
+    return rag.available and rag.looks_like_text_to_sql(user_query)
+
+
+def _sql_tables(sql: str) -> list[str]:
+    matches = re.findall(r"\b(?:from|join)\s+([a-zA-Z_][\w.]*)", sql, flags=re.IGNORECASE)
+    return sorted({item.split(".")[-1] for item in matches})
+
+
+def _spider_generic_sql_response(
+    user_query: str,
+    result,
+    *,
+    max_retries: int,
+) -> dict[str, object] | None:
+    if not _should_use_spider_generic_rag(user_query, result):
+        return None
+    answer = get_spider_text_sql_rag().answer(user_query, provider=LLM_PROVIDER_CLIENT)
+    if not answer:
+        return None
+
+    sql = str(answer["sql"])
+    llm_trace = dict(answer.get("llm_trace") or {})
+    examples = list(answer.get("examples") or [])
+    model_confidence = float(answer.get("confidence") or 0.0)
+    tables = _sql_tables(sql)
+    execution_trace = {
+        "workflow": {
+            "engine": "spider_rag",
+            "requested_engine": "spider_text_sql_rag",
+            "available": True,
+            "nodes": [
+                {"key": "enterprise_schema_gate", "label": "Enterprise Schema Gate"},
+                {"key": "spider_retrieval", "label": "Spider Example Retrieval"},
+                {"key": "generic_llm_generation", "label": "Generic NVIDIA SQL Generation"},
+                {"key": "read_only_guard", "label": "Read-only Guard"},
+            ],
+        },
+        "events": [
+            {
+                "stage": "enterprise_schema_gate",
+                "reason": "No enterprise schema anchor was found; generic Spider RAG was allowed.",
+                "enterprise_confidence": result.confidence,
+            },
+            {"stage": "spider_retrieval", "examples": examples},
+            {
+                "stage": "generic_generation",
+                "provider": llm_trace.get("provider"),
+                "model": llm_trace.get("model"),
+                "fallback_used": llm_trace.get("fallback_used"),
+                "fallback_reason": llm_trace.get("fallback_reason"),
+            },
+        ],
+    }
+    return {
+        "sql": sql,
+        "insights": {
+            "confidence": model_confidence,
+            "threshold": CONFIDENCE_THRESHOLD,
+            "valid": True,
+            "validation": "Generic read-only SQL pattern generated from Spider text-to-SQL RAG; not validated against the enterprise database schema.",
+            "source": (
+                "Spider text-to-SQL RAG + NVIDIA LLM"
+                if llm_trace.get("active") and not llm_trace.get("fallback_used")
+                else "Spider text-to-SQL RAG"
+            ),
+            "attempts": int(llm_trace.get("retry_count") or 0),
+            "max_attempts": max_retries,
+            "tables": tables,
+            "columns": [],
+            "query_type": "Generic SQL",
+            "has_limit": " limit " in f" {sql.lower()} ",
+            "summary": "No matching enterprise schema objects were found, so a generic Spider-style SQL solution was generated.",
+            "clarification_required": False,
+            "clarification_options": [],
+            "selected_tables": [],
+            "join_path": [],
+            "plan": None,
+            "optimizations": [],
+            "optimized_sql": sql,
+            "optimization_explanation": [
+                "Generic Spider RAG output is illustrative and is not optimized against the enterprise database."
+            ],
+            "execution_plan": [
+                "Retrieve similar Spider text-to-SQL examples",
+                "Generate a generic read-only SQL pattern",
+                "Validate that the generic SQL is SELECT/WITH only",
+            ],
+            "cost_reduction_percent": 0,
+            "index_suggestions": [],
+            "confidence_breakdown": {
+                "model_confidence": model_confidence,
+                "retrieval_confidence": float(examples[0].get("score", 0.0)) if examples else 0.0,
+                "system_confidence": model_confidence,
+            },
+            "confidence_evidence": [
+                {
+                    "key": "spider_retrieval",
+                    "label": "Spider Retrieval",
+                    "score": None,
+                    "applicable": True,
+                    "status": "passed",
+                    "required": [user_query],
+                    "matched": [str(examples[0].get("text_query", ""))] if examples else [],
+                    "missing": [],
+                    "note": "Similar public text-to-SQL examples were used because the enterprise schema did not match.",
+                },
+                {
+                    "key": "model_confidence",
+                    "label": "LLM Model",
+                    "score": model_confidence,
+                    "applicable": True,
+                    "status": "passed" if model_confidence >= 70 else "warning",
+                    "required": [],
+                    "matched": [],
+                    "missing": [],
+                    "note": (
+                        "NVIDIA generated a generic SQL pattern from Spider examples."
+                        if llm_trace.get("active")
+                        else "Nearest Spider example was used."
+                    ),
+                },
+            ],
+            "coverage_report": {
+                "mode": "spider_generic_rag",
+                "enterprise_schema_gate": {
+                    "matched": False,
+                    "enterprise_confidence": result.confidence,
+                    "enterprise_clarification_options": result.clarification_options,
+                },
+                "spider_examples": examples,
+            },
+            "business_logic_rule": "",
+            "agent_telemetry": {},
+            "execution_trace": execution_trace,
+            "runtime_metrics": {
+                "query_complexity": "GENERIC",
+                "llm_provider": llm_trace.get("provider"),
+                "llm_model": llm_trace.get("model"),
+                "fallback_used": bool(llm_trace.get("fallback_used")),
+                "fallback_reason": llm_trace.get("fallback_reason", ""),
+                "total_ms": answer.get("latency_ms"),
+            },
+            "benchmark_record": {},
+            "query_complexity": "GENERIC",
+            "confidence_band": "MEDIUM" if model_confidence < 90 else "HIGH",
+            "provider_status": LLM_PROVIDER_CLIENT.health_check(deep=False),
+            "llm_trace": llm_trace,
+            "model_confidence": model_confidence,
+            "planner_confidence": 0,
+            "validator_confidence": 100,
+            "coverage_confidence": 0,
+            "llm_provider": llm_trace.get("provider"),
+            "llm_model": llm_trace.get("model"),
+            "fallback_used": bool(llm_trace.get("fallback_used")),
+            "fallback_reason": _friendly_llm_fallback_reason(llm_trace),
+            "repair_attempts": int(llm_trace.get("retry_count") or 0),
+            "cache_hit": False,
+            "generic_sql": True,
+            "generic_mode": "spider_text_sql_rag",
+            "generic_warning": "This SQL is illustrative. Register or connect the target schema before executing it against a real database.",
+            "spider_examples": examples,
+        },
+    }
+
+
+
 # 18. MAIN PIPELINE
- 
+
 
 def generate_sql(
     user_query: str,
@@ -2165,134 +3597,36 @@ def generate_sql(
         }
 
     normalised = rewrite_query(user_query)
+    result = get_enterprise_copilot().run(normalised or user_query)
+    generic_result = _spider_generic_sql_response(user_query, result, max_retries=max_retries)
+    if generic_result is not None:
+        log_step("[spider-rag] No enterprise schema anchor found; returning generic SQL example")
+        chat_session.add(user_query, str(generic_result["sql"]))
+        return generic_result
+    sql = result.sql
+    provider_label = result.llm_trace.get("provider") or result.provider_status.get("provider") or "local"
+    source = "Enterprise deterministic planner"
+    if result.llm_trace.get("active") and not result.llm_trace.get("fallback_used"):
+        source = f"Enterprise planner + {provider_label} LLM"
+    elif result.llm_trace.get("fallback_used"):
+        source = "Enterprise deterministic planner with LLM fallback"
 
-    docs, col_hints = hybrid_retrieve(normalised)
-    retrieved_tables = [d.metadata["table"].lower() for d in docs]
-    log_step(f"\n[retrieve] Retrieved tables: {retrieved_tables}")
-    if col_hints:
-        log_step(f"[retrieve] Column hints: {col_hints}")
-
-    schema_context = "\n\n---\n\n".join(doc.page_content for doc in docs)
-    join_hints = build_join_hints(retrieved_tables)
-    if join_hints:
-        log_step(f"[retrieve] Join hints:\n{join_hints}")
-
-    history_context = chat_session.get_context()
-
-    if llm is None:
-        result = get_enterprise_copilot().run(user_query)
-        sql = result.sql
-        log_step("[local] Generated SQL with enterprise local agent pipeline")
-        log_step(f"[local] Confidence: {result.confidence}/100 | Valid: {result.valid}")
-        if result.clarification_required:
-            log_step(f"[local] Clarification options: {result.clarification_options}")
-        else:
-            log_step(f"[local] SQL: {sql}")
-            chat_session.add(user_query, sql)
-        return {
-            "sql": sql,
-            "insights": enterprise_result_to_insights(result),
-        }
-
-    for attempt in range(1, max_retries + 1):
-        prompt = build_prompt(
-            schema_context,
-            normalised,
-            join_hints,
-            col_hints,
-            history_context,
-        )
-        try:
-            response = llm.invoke(prompt)
-        except Exception as exc:
-            log_step(f"[llm] Attempt {attempt}/{max_retries} failed: {exc}")
-            sql = generate_sql_fallback(user_query, docs)
-            chat_session.add(user_query, sql)
-            return {
-                "sql": sql,
-                "insights": build_query_insights(
-                    sql,
-                    user_query,
-                    source="Local rule-based engine",
-                    attempts=attempt - 1,
-                    validation_note=f"LLM unavailable: {exc}",
-                ),
-            }
-
-        sql = response.content.strip()
-        sql = re.sub(r"^```[a-zA-Z]*\n?", "", sql).rstrip("`").strip()
-
-        if sql.upper().strip() == "NOT_POSSIBLE":
-            sql = "The schema does not have enough information to answer this query."
-            return {
-                "sql": sql,
-                "insights": {
-                    "confidence": 0,
-                    "threshold": CONFIDENCE_THRESHOLD,
-                    "valid": False,
-                    "validation": "Schema does not contain enough information",
-                    "source": "LLM validated",
-                    "attempts": attempt,
-                    "max_attempts": max_retries,
-                    "tables": retrieved_tables,
-                    "columns": col_hints,
-                    "query_type": "Not possible",
-                    "has_limit": False,
-                    "summary": "Not possible from current schema",
-                },
-            }
-
-        is_valid, val_msg = validate_sql(sql)
-
-        if is_valid and DB_PATH:
-            exec_ok, exec_msg = execution_validate(sql)
-            if not exec_ok:
-                is_valid, val_msg = False, f"DB execution error: {exec_msg}"
-
-        score = confidence_score(sql, is_valid, user_query)
-
-        log_step(
-            f"\n[llm] Attempt {attempt}/{max_retries} | "
-            f"Valid: {is_valid} | Score: {score}/100 | {val_msg}"
-        )
-        log_step(f"[llm] SQL: {sql}")
-
-        if is_valid and score >= CONFIDENCE_THRESHOLD:
-            chat_session.add(user_query, sql)
-            return {
-                "sql": sql,
-                "insights": build_query_insights(
-                    sql,
-                    user_query,
-                    source="LLM validated",
-                    attempts=attempt,
-                    validation_note=val_msg,
-                ),
-            }
-
-        if attempt < max_retries:
-            history_context += (
-                f"\n\n[ATTEMPT {attempt} FAILED - Reason: {val_msg}. "
-                "Fix this mistake before generating again.]\n"
-                f"Bad SQL was: {sql}"
-            )
-
-    sql = "Could not generate a reliable SQL query after maximum retries."
+    log_step(f"[enterprise] Source: {source}")
+    log_step(f"[enterprise] Complexity: {result.query_complexity} | Confidence: {result.confidence}/100 | Valid: {result.valid}")
+    if result.llm_trace.get("fallback_used"):
+        log_step(f"[enterprise] Fallback reason: {result.llm_trace.get('fallback_reason')}")
+    if result.clarification_required:
+        log_step(f"[enterprise] Clarification options: {result.clarification_options}")
+    else:
+        log_step(f"[enterprise] SQL: {sql}")
+        chat_session.add(user_query, sql)
     return {
         "sql": sql,
         "insights": {
-            "confidence": 0,
-            "threshold": CONFIDENCE_THRESHOLD,
-            "valid": False,
-            "validation": "Maximum retries exhausted",
-            "source": "LLM retries",
-            "attempts": max_retries,
+            **enterprise_result_to_insights(result),
+            "source": source,
+            "attempts": int(result.llm_trace.get("retry_count") or 0),
             "max_attempts": max_retries,
-            "tables": retrieved_tables,
-            "columns": col_hints,
-            "query_type": "Retry failure",
-            "has_limit": False,
-            "summary": "Generation did not pass validation",
         },
     }
 
@@ -2402,20 +3736,38 @@ def auth_forgot_password():
     if limited:
         return limited
     payload = request.get_json(silent=True) or {}
-    token = auth_store.create_password_reset(str(payload.get("email") or ""))
+    email = str(payload.get("email") or "").strip().lower()
+    token = auth_store.create_password_reset(email)
     response: dict[str, object] = {
-        "message": "If the account exists, a password reset request has been created."
+        "message": "If the account exists, a password reset link has been sent."
     }
     expose_token = os.getenv(
         "AUTH_EXPOSE_RESET_TOKEN",
         "1" if APP_ENV != "production" else "0",
     ).lower() in {"1", "true", "yes"}
+    delivery: dict[str, object] = {}
+    if token:
+        delivery = send_password_reset_email(EMAIL_CONFIG, email, token)
+        if APP_ENV != "production":
+            response["email_delivery"] = delivery
+            response["reset_url"] = password_reset_url(EMAIL_CONFIG, token)
+    elif APP_ENV != "production":
+        response["email_delivery"] = {
+            "sent": False,
+            "status": "account_not_found",
+            "provider": EMAIL_CONFIG.backend,
+            "reason": "No active account exists for that email in this local database.",
+        }
     if token and expose_token:
         response["reset_token"] = token
     auth_store.log(
         "auth_logs",
         "password_reset_requested",
-        details={"account_found": bool(token)},
+        details={
+            "account_found": bool(token),
+            "email_delivery_status": delivery.get("status") if delivery else "account_not_found",
+            "email_delivery_provider": delivery.get("provider") if delivery else "",
+        },
         ip_address=_client_ip(),
     )
     return jsonify(response)
@@ -2460,10 +3812,17 @@ def home():
             "/schema/catalog",
             "/schema/relationships",
             "/schema/er",
+            "/schema/studio/tables",
+            "/metadata/status",
+            "/metadata/refresh",
             "/enterprise-schema",
             "/schema-request",
             "/schema-requests",
             "/metrics",
+            "/runtime/config",
+            "/runtime/provider/configure",
+            "/runtime/email/configure",
+            "/diagnostics/provider",
         ],
     })
 
@@ -2495,44 +3854,103 @@ def health():
         "status": "ok",
         "schema_tables": sorted(schema_tables),
         "columns": len(column_documents),
+        "provider": LLM_PROVIDER_CLIENT.health_check(deep=False),
+    })
+
+
+@app.get("/runtime/config")
+def runtime_config_api():
+    return jsonify({
+        "provider": _current_provider_payload(deep=False),
+        "email": _current_email_payload(),
+        "paths": {
+            "project_root": str(RUNTIME_PATHS.project_root),
+            "runtime_root": str(RUNTIME_PATHS.runtime_root),
+            "cache_root": str(RUNTIME_PATHS.cache_root),
+            "sqlite_root": str(RUNTIME_PATHS.sqlite_root),
+            "logs_root": str(RUNTIME_PATHS.logs_root),
+            "model_root": str(RUNTIME_PATHS.model_root),
+            "faiss_root": str(RUNTIME_PATHS.faiss_root),
+            "temp_root": str(RUNTIME_PATHS.temp_root),
+            "dynamic_schema_file": str(DYNAMIC_SCHEMA_FILE),
+            "provider_config_file": str(RUNTIME_PROVIDER_ENV_FILE),
+            "email_config_file": str(RUNTIME_EMAIL_ENV_FILE),
+        },
+    })
+
+
+@app.post("/runtime/provider/configure")
+@provider_config_required
+def runtime_provider_configure_api():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = _apply_runtime_provider_config(payload)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    auth_store.log(
+        "audit_logs",
+        "llm_provider_configured",
+        user_id=g.current_user["id"],
+        details={
+            "provider": PROVIDER_CONFIG.provider,
+            "model": PROVIDER_CONFIG.chat_model,
+            "base_url": PROVIDER_CONFIG.base_url,
+            "api_key_present": bool(PROVIDER_CONFIG.api_key),
+            "available": bool(LLM_PROVIDER_CLIENT.available),
+        },
+        ip_address=_client_ip(),
+    )
+    return jsonify(result)
+
+
+@app.post("/runtime/email/configure")
+@provider_config_required
+def runtime_email_configure_api():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = _apply_runtime_email_config(payload)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    delivery = result.get("delivery") if isinstance(result, dict) else None
+    auth_store.log(
+        "audit_logs",
+        "email_delivery_configured",
+        user_id=g.current_user["id"],
+        details={
+            "backend": EMAIL_CONFIG.backend,
+            "host": EMAIL_CONFIG.host,
+            "sender": EMAIL_CONFIG.sender,
+            "smtp_configured": EMAIL_CONFIG.smtp_configured,
+            "password_present": bool(EMAIL_CONFIG.password),
+            "delivery_status": delivery.get("status") if isinstance(delivery, dict) else "",
+        },
+        ip_address=_client_ip(),
+    )
+    return jsonify(result)
+
+
+@app.get("/diagnostics/provider")
+@admin_required
+def provider_diagnostics_api():
+    deep = str(request.args.get("deep", "0")).lower() in {"1", "true", "yes"}
+    return jsonify({
+        "status": LLM_PROVIDER_CLIENT.health_check(deep=deep),
+        "metrics": LLM_PROVIDER_CLIENT.metrics(),
     })
 
 
 @app.get("/schema/catalog")
 def schema_catalog():
     relationships = get_enterprise_copilot().relationship_map()
-    tables = []
-    for table in sorted(schema_tables):
-        columns = [
-            {
-                "name": column,
-                "data_type": str(schema_column_types.get(table, {}).get(column, "")),
-                "is_pk": column.endswith("_id") and column == schema_column_order.get(table, [""])[0],
-                "is_fk": any(rel[0] == column for rel in schema_graph.get(table, [])),
-                "is_virtual": (table, column) in virtual_schema_columns,
-            }
-            for column in schema_column_order.get(table, [])
-        ]
-        direct_relationships = relationships.get(table, [])
-        tables.append({
-            "name": table,
-            "domain": "Core Copilot Schema",
-            "purpose": "Excel-backed schema table used by the active SQL copilot.",
-            "row_count": "live",
-            "columns": columns,
-            "relationships": direct_relationships,
-            "indexes": [
-                column["name"]
-                for column in columns
-                if column["is_pk"] or column["is_fk"] or column["name"] in {"status", "created_at"}
-            ],
-            "last_updated": "2026-06-12",
-        })
+    tables = [schema_catalog_entry(table) for table in sorted(schema_tables)]
+    for table in tables:
+        table["relationships"] = relationships.get(str(table["name"]), table["relationships"])
     enterprise_catalog = synthetic_enterprise_engine.generate_catalog()
     return jsonify({
         "summary": {
             "tables_count": len(tables),
             "relationships_count": sum(len(items) for items in relationships.values()),
+            "dynamic_tables": len(dynamic_schema_tables),
             "enterprise_virtual_tables": enterprise_catalog["summary"]["tables_count"],
             "enterprise_virtual_relationships": enterprise_catalog["summary"]["relationships_count"],
         },
@@ -2563,6 +3981,346 @@ def enterprise_schema():
     return jsonify(synthetic_enterprise_engine.generate_catalog())
 
 
+def _dtype_to_sql(dtype: object) -> str:
+    text = str(dtype).lower()
+    if "int" in text:
+        return "INTEGER"
+    if any(token in text for token in ("float", "double", "decimal")):
+        return "DECIMAL(18,2)"
+    if "bool" in text:
+        return "BOOLEAN"
+    if "date" in text or "time" in text:
+        return "TIMESTAMP"
+    return "TEXT"
+
+
+def _dataframe_schema(
+    frame: pd.DataFrame,
+    *,
+    table_name: str,
+    source_format: str,
+) -> dict[str, object]:
+    clean = frame.copy()
+    clean.columns = [
+        _normalise_identifier(column, f"column_{index + 1}")
+        for index, column in enumerate(clean.columns)
+    ]
+    columns = [
+        {
+            "name": column,
+            "data_type": _dtype_to_sql(clean[column].dtype),
+            "description": f"Inferred from {source_format} field {column}.",
+            "is_pk": index == 0 and column.endswith("_id"),
+        }
+        for index, column in enumerate(clean.columns)
+    ]
+    return {
+        "source_format": source_format,
+        "table": {
+            "name": table_name,
+            "domain": "Uploaded Schema",
+            "purpose": f"Inferred from uploaded {source_format} sample.",
+            "columns": columns,
+            "sample_rows": clean.head(5).where(pd.notnull(clean), None).to_dict(orient="records"),
+            "relationships": [],
+            "indexes": [
+                column["name"]
+                for column in columns
+                if column.get("is_pk") or column["name"] in {"status", "created_at"}
+            ],
+        },
+    }
+
+
+def _split_sql_columns(definition: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for char in definition:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        if char == "," and depth == 0:
+            part = "".join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+        else:
+            current.append(char)
+    tail = "".join(current).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _infer_sql_ddl_schema(content: str, filename: str) -> dict[str, object]:
+    match = re.search(
+        r"create\s+table\s+(?:if\s+not\s+exists\s+)?[`\"\[]?([a-zA-Z_][\w.]*).*?\((.*)\)",
+        content,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        raise ValueError("SQL upload must contain a CREATE TABLE statement.")
+    raw_table = match.group(1).split(".")[-1].strip("`\"[]")
+    table_name = _normalise_identifier(raw_table or Path(filename).stem, "uploaded_table")
+    body = match.group(2)
+    columns: list[dict[str, object]] = []
+    relationships: list[dict[str, str]] = []
+    table_pk: set[str] = set()
+
+    for part in _split_sql_columns(body):
+        constraint = part.strip()
+        lower = constraint.lower()
+        if lower.startswith(("primary key", "foreign key", "unique", "constraint", "check")):
+            pk_match = re.search(r"primary\s+key\s*\((.*?)\)", constraint, re.IGNORECASE)
+            if pk_match:
+                table_pk.update(
+                    _normalise_identifier(item.strip(" `\"[]"), "id")
+                    for item in pk_match.group(1).split(",")
+                )
+            fk_match = re.search(
+                r"foreign\s+key\s*\((.*?)\)\s*references\s+([a-zA-Z_][\w.]*)\s*\((.*?)\)",
+                constraint,
+                re.IGNORECASE,
+            )
+            if fk_match:
+                from_column = _normalise_identifier(fk_match.group(1).strip(" `\"[]"), "source_id")
+                to_table = _normalise_identifier(fk_match.group(2).split(".")[-1], "target_table")
+                to_column = _normalise_identifier(fk_match.group(3).strip(" `\"[]"), "target_id")
+                relationships.append({
+                    "from_table": table_name,
+                    "from_column": from_column,
+                    "to_table": to_table,
+                    "to_column": to_column,
+                })
+            continue
+        tokens = constraint.split()
+        if len(tokens) < 2:
+            continue
+        name = _normalise_identifier(tokens[0].strip("`\"[]"), f"column_{len(columns) + 1}")
+        data_type_tokens = []
+        for token in tokens[1:]:
+            if token.lower() in {
+                "primary", "references", "not", "null", "default", "unique",
+                "check", "constraint", "collate", "generated",
+            }:
+                break
+            data_type_tokens.append(token)
+        data_type = " ".join(data_type_tokens) or "TEXT"
+        ref_match = re.search(
+            r"references\s+([a-zA-Z_][\w.]*)\s*\((.*?)\)",
+            constraint,
+            re.IGNORECASE,
+        )
+        if ref_match:
+            relationships.append({
+                "from_table": table_name,
+                "from_column": name,
+                "to_table": _normalise_identifier(ref_match.group(1).split(".")[-1], "target_table"),
+                "to_column": _normalise_identifier(ref_match.group(2).strip(" `\"[]"), "target_id"),
+            })
+        columns.append({
+            "name": name,
+            "data_type": data_type.upper(),
+            "description": f"Inferred from SQL DDL column {name}.",
+            "is_pk": "primary key" in lower or name in table_pk,
+            "is_fk": bool(ref_match),
+        })
+    for column in columns:
+        if column["name"] in table_pk:
+            column["is_pk"] = True
+    if not columns:
+        raise ValueError("No columns could be inferred from SQL DDL.")
+    return {
+        "source_format": "sql",
+        "table": {
+            "name": table_name,
+            "domain": "Uploaded Schema",
+            "purpose": "Inferred from uploaded SQL DDL.",
+            "columns": columns,
+            "relationships": relationships,
+            "indexes": [
+                column["name"]
+                for column in columns
+                if column.get("is_pk") or column.get("is_fk")
+            ],
+        },
+    }
+
+
+def infer_uploaded_schema(filename: str, content: bytes) -> dict[str, object]:
+    suffix = Path(filename).suffix.lower()
+    table_name = _normalise_identifier(Path(filename).stem, "uploaded_table")
+    if suffix == ".csv":
+        frame = pd.read_csv(io.BytesIO(content), nrows=100)
+        return _dataframe_schema(frame, table_name=table_name, source_format="csv")
+    if suffix in {".xlsx", ".xls"}:
+        frame = pd.read_excel(io.BytesIO(content), nrows=100)
+        return _dataframe_schema(frame, table_name=table_name, source_format="excel")
+    if suffix == ".json":
+        parsed = json.loads(content.decode("utf-8", errors="replace"))
+        rows = parsed
+        if isinstance(parsed, dict):
+            rows = parsed.get("rows") or parsed.get("data") or parsed.get("items") or [parsed]
+        frame = pd.DataFrame(rows)
+        if frame.empty:
+            raise ValueError("JSON upload did not contain tabular rows.")
+        return _dataframe_schema(frame, table_name=table_name, source_format="json")
+    if suffix == ".sql":
+        return _infer_sql_ddl_schema(content.decode("utf-8", errors="replace"), filename)
+    if suffix == ".parquet":
+        try:
+            frame = pd.read_parquet(io.BytesIO(content))
+        except Exception as exc:
+            raise ValueError(
+                "Parquet upload requires a pandas parquet engine such as pyarrow or fastparquet."
+            ) from exc
+        return _dataframe_schema(frame.head(100), table_name=table_name, source_format="parquet")
+    raise ValueError("Unsupported upload type.")
+
+
+@app.get("/metadata/status")
+def metadata_status_api():
+    return jsonify({
+        "status": dict(metadata_refresh_status),
+        "dynamic_schema_file": str(DYNAMIC_SCHEMA_FILE),
+        "dynamic_tables": [
+            schema_catalog_entry(table)
+            for table in sorted(dynamic_schema_tables)
+            if table in schema_tables
+        ],
+        "storage": {
+            "runtime_root": str(RUNTIME_PATHS.runtime_root),
+            "faiss_root": str(RUNTIME_PATHS.faiss_root),
+            "model_root": str(RUNTIME_PATHS.model_root),
+        },
+    })
+
+
+@app.post("/metadata/refresh")
+@admin_required
+def metadata_refresh_api():
+    status = refresh_metadata_engine(reason="admin_api")
+    auth_store.log(
+        "audit_logs",
+        "metadata_refreshed",
+        user_id=g.current_user["id"],
+        details=status,
+        ip_address=_client_ip(),
+    )
+    return jsonify({"status": status})
+
+
+@app.post("/schema/studio/tables")
+@admin_required
+def schema_studio_create_table_api():
+    payload = request.get_json(silent=True) or {}
+    try:
+        table = _normalise_identifier(payload.get("name") or payload.get("table_name"), "dynamic_table")
+        if table in schema_tables and table not in dynamic_schema_tables:
+            return jsonify({"error": f"'{table}' is an Excel-backed table and cannot be overwritten."}), 409
+        entry = _upsert_schema_table(payload, source="dynamic")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    auth_store.log(
+        "audit_logs",
+        "schema_table_upserted",
+        user_id=g.current_user["id"],
+        details={"table": entry["name"]},
+        ip_address=_client_ip(),
+    )
+    return jsonify({
+        "table": entry,
+        "metadata_status": dict(metadata_refresh_status),
+    }), 201
+
+
+@app.patch("/schema/studio/tables/<table_name>")
+@admin_required
+def schema_studio_update_table_api(table_name: str):
+    payload = request.get_json(silent=True) or {}
+    table = _normalise_identifier(table_name, "dynamic_table")
+    if table not in dynamic_schema_tables:
+        return jsonify({"error": "Only dynamic schema tables can be edited live."}), 400
+    payload["name"] = table
+    try:
+        entry = _upsert_schema_table(payload, source="dynamic")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({
+        "table": entry,
+        "metadata_status": dict(metadata_refresh_status),
+    })
+
+
+@app.delete("/schema/studio/tables/<table_name>")
+@admin_required
+def schema_studio_delete_table_api(table_name: str):
+    deleted, message = _delete_schema_table(table_name)
+    if not deleted:
+        status = 404 if "not found" in message else 400
+        return jsonify({"error": message}), status
+    auth_store.log(
+        "audit_logs",
+        "schema_table_deleted",
+        user_id=g.current_user["id"],
+        details={"table": message},
+        ip_address=_client_ip(),
+    )
+    return jsonify({
+        "deleted": message,
+        "metadata_status": dict(metadata_refresh_status),
+    })
+
+
+@app.post("/schema/studio/apply-request/<int:request_id>")
+@admin_required
+def schema_studio_apply_request_api(request_id: int):
+    schema_request = schema_request_repo.get(request_id)
+    if not schema_request:
+        return jsonify({"error": "schema request not found"}), 404
+    generated = schema_request.get("generated_schema") or {}
+    tables = generated.get("tables") if isinstance(generated, dict) else []
+    if not isinstance(tables, list) or not tables:
+        return jsonify({"error": "schema request has no generated tables to apply"}), 400
+    applied = []
+    top_level_relationships = generated.get("relationships", []) if isinstance(generated, dict) else []
+    for table_payload in tables:
+        if not isinstance(table_payload, dict):
+            continue
+        table_name = _normalise_identifier(table_payload.get("name") or table_payload.get("table_name"), "dynamic_table")
+        table_relationships = list(table_payload.get("relationships") or [])
+        for relationship in top_level_relationships if isinstance(top_level_relationships, list) else []:
+            parsed = _relationship_payload(relationship, table_name)
+            if parsed and parsed["from_table"] == table_name:
+                table_relationships.append(parsed)
+        merged = {
+            **table_payload,
+            "relationships": table_relationships,
+            "domain": table_payload.get("domain") or generated.get("domain") or "Dynamic Enterprise Schema",
+            "purpose": table_payload.get("purpose") or schema_request.get("user_notes") or schema_request.get("business_context"),
+            "source": f"schema_request:{request_id}",
+        }
+        try:
+            applied.append(_upsert_schema_table(merged, source=f"schema_request:{request_id}"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc), "table": table_name}), 400
+    schema_request_repo.update_status(request_id, "generated")
+    auth_store.log(
+        "audit_logs",
+        "schema_request_applied",
+        user_id=g.current_user["id"],
+        details={"request_id": request_id, "tables": [item["name"] for item in applied]},
+        ip_address=_client_ip(),
+    )
+    return jsonify({
+        "request_id": request_id,
+        "applied_tables": applied,
+        "metadata_status": dict(metadata_refresh_status),
+    })
+
+
 @app.route("/schema-request", methods=["POST", "OPTIONS"])
 def schema_request_api():
     if request.method == "OPTIONS":
@@ -2572,14 +4330,38 @@ def schema_request_api():
     upload = request.files.get("file")
     if upload and upload.filename:
         suffix = Path(upload.filename).suffix.lower()
-        if suffix not in {".csv", ".json"}:
-            return jsonify({"error": "Only CSV and JSON uploads are supported."}), 400
-        content = upload.read(1_000_001)
-        if len(content) > 1_000_000:
-            return jsonify({"error": "Upload must be 1 MB or smaller."}), 400
+        if suffix not in {".csv", ".json", ".xlsx", ".xls", ".sql", ".parquet"}:
+            return jsonify({"error": "Only CSV, Excel, JSON, SQL, and Parquet uploads are supported."}), 400
+        content = upload.read(5_000_001)
+        if len(content) > 5_000_000:
+            return jsonify({"error": "Upload must be 5 MB or smaller."}), 400
+        try:
+            inferred_schema = infer_uploaded_schema(upload.filename, content)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         payload["attachment_name"] = Path(upload.filename).name[:255]
-        payload["attachment_content"] = content.decode("utf-8", errors="replace")
-        payload["request_kind"] = "csv_upload" if suffix == ".csv" else "json_upload"
+        payload["attachment_content"] = json.dumps({
+            "inferred_schema": inferred_schema,
+            "preview_bytes": len(content),
+        })
+        payload["inferred_schema"] = inferred_schema
+        inferred_table = inferred_schema.get("table", {}) if isinstance(inferred_schema, dict) else {}
+        if not payload.get("table_name") and isinstance(inferred_table, dict):
+            payload["table_name"] = inferred_table.get("name", "")
+        if not payload.get("columns") and isinstance(inferred_table, dict):
+            payload["columns"] = [
+                column.get("name")
+                for column in inferred_table.get("columns", [])
+                if isinstance(column, dict) and column.get("name")
+            ]
+        payload["request_kind"] = {
+            ".csv": "csv_upload",
+            ".json": "json_upload",
+            ".xlsx": "excel_upload",
+            ".xls": "excel_upload",
+            ".sql": "sql_upload",
+            ".parquet": "parquet_upload",
+        }[suffix]
     if isinstance(payload.get("columns"), str):
         payload["columns"] = [
             item.strip() for item in str(payload["columns"]).split(",") if item.strip()
@@ -2720,13 +4502,19 @@ def sql_api():
         log_step("")
         log_step(f"[request] User query: {query}")
         result = generate_sql(query, session)
-        if str(result.get("sql", "")).lower().strip().startswith("select"):
+        if (
+            str(result.get("sql", "")).lower().strip().startswith("select")
+            and not result.get("insights", {}).get("generic_sql")
+        ):
             result = optimize_with_rl_feedback(query, result["sql"], result["insights"])
 
         return jsonify({
             "query": query,
             "sql": result["sql"],
-            "message": "Generated using LLM-free enterprise schema agents with validation and RL feedback.",
+            "message": (
+                "Generated using enterprise schema agents, grounded validation, "
+                "confidence scoring, and provider fallback."
+            ),
             "insights": result["insights"],
         })
 
@@ -2735,8 +4523,67 @@ def sql_api():
         return jsonify({"error": str(exc)}), 500
 
 
-def load_agent_telemetry_metrics() -> dict:
+METRICS_RANGE_DAYS: dict[str, int | None] = {
+    "day": 1,
+    "week": 7,
+    "month": 30,
+    "quarter": 90,
+    "year": 365,
+    "all": None,
+}
+
+
+def _metric_timestamp_seconds(value: object) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _filter_metrics_by_range(
+    rows: list,
+    days: int | None,
+    timestamp_getter,
+) -> list:
+    if days is None:
+        return list(rows)
+    cutoff = datetime.now(timezone.utc).timestamp() - (days * 86_400)
+    return [
+        row
+        for row in rows
+        if (timestamp := _metric_timestamp_seconds(timestamp_getter(row))) is not None
+        and timestamp >= cutoff
+    ]
+
+
+def _metrics_range_from_request() -> tuple[str, int | None]:
+    raw = str(request.args.get("range", "week")).strip().lower()
+    range_key = raw if raw in METRICS_RANGE_DAYS else "week"
+    return range_key, METRICS_RANGE_DAYS[range_key]
+
+
+def _metrics_range_payload(range_key: str, days: int | None) -> dict[str, object]:
+    now = datetime.now(timezone.utc)
+    start = None
+    if days is not None:
+        start = datetime.fromtimestamp(now.timestamp() - (days * 86_400), timezone.utc).isoformat()
+    return {
+        "key": range_key,
+        "days": days,
+        "from": start,
+        "to": now.isoformat(),
+    }
+
+
+def load_agent_telemetry_metrics(days: int | None = None) -> dict:
     with sqlite3.connect(FEEDBACK_DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
         exists = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_telemetry'"
         ).fetchone()
@@ -2750,14 +4597,38 @@ def load_agent_telemetry_metrics() -> dict:
                 "missing_concepts": [],
                 "trend": [],
             }
+        available_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(agent_telemetry)").fetchall()
+        }
+        base_columns = [
+            "query", "confidence", "valid", "intent_score", "entity_score", "join_score",
+            "column_score", "aggregation_score", "semantic_score", "missing_concepts", "timestamp",
+        ]
+        optional_defaults = {
+            "provider": "'local'",
+            "model": "'deterministic'",
+            "complexity": "'SIMPLE'",
+            "system_confidence": "confidence",
+            "model_confidence": "0",
+            "planner_confidence": "0",
+            "validator_confidence": "0",
+            "coverage_confidence": "0",
+            "fallback_used": "0",
+            "retry_count": "0",
+            "latency_ms": "0",
+        }
+        selected = [
+            column if column in available_columns else f"{default} AS {column}"
+            for column, default in {**{column: column for column in base_columns}, **optional_defaults}.items()
+        ]
         rows = conn.execute(
-            """
-            SELECT query, confidence, valid, intent_score, entity_score, join_score,
-                   column_score, aggregation_score, semantic_score, missing_concepts, timestamp
+            f"""
+            SELECT {', '.join(selected)}
             FROM agent_telemetry
             ORDER BY timestamp ASC
             """
         ).fetchall()
+    rows = _filter_metrics_by_range(rows, days, lambda row: row["timestamp"])
     if not rows:
         return {
             "intent_accuracy": 0,
@@ -2769,41 +4640,64 @@ def load_agent_telemetry_metrics() -> dict:
             "trend": [],
         }
 
-    def avg(index: int) -> float:
-        return round(sum(float(row[index]) for row in rows) / len(rows), 2)
+    def avg(name: str) -> float:
+        return round(sum(float(row[name]) for row in rows) / len(rows), 2)
+
+    def has_signal(name: str) -> bool:
+        return any(float(row[name] or 0) > 0 for row in rows)
 
     missing: list[str] = []
     for row in rows[-25:]:
         try:
-            missing.extend(json.loads(row[9] or "[]"))
+            missing.extend(json.loads(row["missing_concepts"] or "[]"))
         except json.JSONDecodeError:
             pass
+    enterprise_rows = [row for row in rows if row["complexity"] == "ENTERPRISE"]
+    fallback_rows = [row for row in rows if int(row["fallback_used"] or 0)]
+    planner_metric = avg("planner_confidence") if has_signal("planner_confidence") else avg("entity_score")
+    validator_metric = avg("validator_confidence") if has_signal("validator_confidence") else avg("semantic_score")
+    coverage_metric = avg("coverage_confidence") if has_signal("coverage_confidence") else avg("confidence")
     return {
-        "intent_accuracy": avg(3),
-        "planner_accuracy": avg(4),
-        "validation_accuracy": avg(8),
-        "optimization_accuracy": round((sum(1 for row in rows if row[2]) / len(rows)) * 100, 2),
-        "coverage_score": avg(1),
+        "intent_accuracy": avg("intent_score"),
+        "planner_accuracy": planner_metric,
+        "validation_accuracy": validator_metric,
+        "optimization_accuracy": round((sum(1 for row in rows if row["valid"]) / len(rows)) * 100, 2),
+        "coverage_score": coverage_metric,
         "missing_concepts": sorted(set(missing))[:20],
+        "fallback_rate": round((len(fallback_rows) / len(rows)) * 100, 2),
+        "enterprise_success_rate": round((
+            sum(1 for row in enterprise_rows if row["valid"]) / len(enterprise_rows)
+        ) * 100, 2) if enterprise_rows else 0,
         "trend": [
             {
-                "query": row[0],
-                "confidence": float(row[1]),
-                "valid": bool(row[2]),
-                "intent_score": float(row[3]),
-                "entity_score": float(row[4]),
-                "join_score": float(row[5]),
-                "column_score": float(row[6]),
-                "aggregation_score": float(row[7]),
-                "semantic_score": float(row[8]),
-                "timestamp": row[10],
+                "query": row["query"],
+                "confidence": float(row["confidence"]),
+                "valid": bool(row["valid"]),
+                "intent_score": float(row["intent_score"]),
+                "entity_score": float(row["entity_score"]),
+                "join_score": float(row["join_score"]),
+                "column_score": float(row["column_score"]),
+                "aggregation_score": float(row["aggregation_score"]),
+                "semantic_score": float(row["semantic_score"]),
+                "timestamp": row["timestamp"],
+                "provider": row["provider"],
+                "model": row["model"],
+                "complexity": row["complexity"],
+                "system_confidence": float(row["system_confidence"]),
+                "model_confidence": float(row["model_confidence"]),
+                "planner_confidence": float(row["planner_confidence"]),
+                "validator_confidence": float(row["validator_confidence"]),
+                "coverage_confidence": float(row["coverage_confidence"]),
+                "fallback_used": bool(row["fallback_used"]),
+                "retry_count": int(row["retry_count"]),
+                "latency_ms": float(row["latency_ms"]),
             }
             for row in rows[-100:]
         ],
     }
 
 
-def load_feedback_metrics() -> dict:
+def load_feedback_metrics(*, days: int | None = None, range_key: str = "all") -> dict:
     ensure_feedback_table(FEEDBACK_DB_PATH)
     with sqlite3.connect(FEEDBACK_DB_PATH) as conn:
         rows = conn.execute(
@@ -2813,25 +4707,65 @@ def load_feedback_metrics() -> dict:
             ORDER BY timestamp ASC
             """
         ).fetchall()
+    rows = _filter_metrics_by_range(rows, days, lambda row: row[5])
 
     if not rows:
-        telemetry = load_agent_telemetry_metrics()
+        telemetry = load_agent_telemetry_metrics(days=days)
+        telemetry_trend = list(telemetry.get("trend") or [])
+        trend = [
+            {
+                "query": point.get("query", ""),
+                "reward": 1.0 if point.get("valid") else 0.0,
+                "execution_time": round(float(point.get("latency_ms") or 0.0) / 1000, 4),
+                "validation_status": "Valid" if point.get("valid") else "Needs review",
+                "timestamp": point.get("timestamp", ""),
+                "valid": bool(point.get("valid")),
+                "confidence": float(point.get("confidence", 0.0)),
+                "planner_score": float(point.get("planner_confidence") or point.get("entity_score") or 0.0),
+                "validator_score": float(point.get("validator_confidence") or point.get("semantic_score") or 0.0),
+                "intent_score": float(point.get("intent_score") or 0.0),
+                "join_score": float(point.get("join_score") or 0.0),
+                "column_score": float(point.get("column_score") or 0.0),
+                "aggregation_score": float(point.get("aggregation_score") or 0.0),
+                "semantic_score": float(point.get("semantic_score") or 0.0),
+                "system_confidence": float(point.get("system_confidence") or point.get("confidence") or 0.0),
+                "coverage_confidence": float(point.get("coverage_confidence") or 0.0),
+                "model_confidence": float(point.get("model_confidence") or 0.0),
+                "provider": point.get("provider", "local"),
+                "model": point.get("model", "deterministic"),
+                "complexity": point.get("complexity", "SIMPLE"),
+                "fallback_used": bool(point.get("fallback_used")),
+                "retry_count": int(point.get("retry_count") or 0),
+                "latency_ms": float(point.get("latency_ms") or 0.0),
+            }
+            for point in telemetry_trend[-100:]
+        ]
+        llm_metrics = LLM_PROVIDER_CLIENT.metrics()
         return {
-            "total": 0,
-            "average_reward": 0,
-            "query_success_rate": 0,
-            "sql_accuracy": 0,
-            "average_latency": 0,
-            "trend": [],
+            "total": len(trend),
+            "average_reward": round(sum(float(point["reward"]) for point in trend) / len(trend), 2) if trend else 0,
+            "query_success_rate": round((sum(1 for point in trend if point["valid"]) / len(trend)) * 100, 2) if trend else 0,
+            "sql_accuracy": round((sum(1 for point in trend if point["valid"]) / len(trend)) * 100, 2) if trend else 0,
+            "average_latency": round(sum(float(point["execution_time"]) for point in trend) / len(trend), 4) if trend else 0,
+            "trend": trend,
+            "range": _metrics_range_payload(range_key, days),
             "planner_accuracy": telemetry["planner_accuracy"],
             "validator_precision": telemetry["validation_accuracy"],
             "confidence_reliability": telemetry["coverage_score"],
             "agent_telemetry": telemetry,
             "schema_growth": schema_request_repo.analytics(),
             "enterprise_schema": synthetic_enterprise_engine.generate_catalog()["summary"],
+            "llm_provider": LLM_PROVIDER_CLIENT.health_check(deep=False),
+            "llm_metrics": llm_metrics,
+            "research_metrics": {
+                "multi_hop_success_rate": 0,
+                "five_plus_table_success_rate": 0,
+                "clarification_rate": 0,
+                "fallback_rate": llm_metrics.get("fallback_rate", 0),
+            },
         }
 
-    telemetry = load_agent_telemetry_metrics()
+    telemetry = load_agent_telemetry_metrics(days=days)
     telemetry_trend = list(telemetry.get("trend") or [])
     used_telemetry: set[int] = set()
 
@@ -2876,10 +4810,22 @@ def load_feedback_metrics() -> dict:
             "timestamp": row[5],
             "valid": bool(telemetry_point.get("valid", valid)),
             "confidence": float(telemetry_point.get("confidence", 100.0 if valid else 0.0)),
-            "planner_score": float(telemetry_point.get("entity_score", 0.0)),
-            "validator_score": float(telemetry_point.get("semantic_score", 100.0 if valid else 0.0)),
+            "planner_score": float(telemetry_point.get("planner_confidence") or telemetry_point.get("entity_score") or 0.0),
+            "validator_score": float(telemetry_point.get("validator_confidence") or telemetry_point.get("semantic_score") or (100.0 if valid else 0.0)),
             "intent_score": float(telemetry_point.get("intent_score", 0.0)),
             "join_score": float(telemetry_point.get("join_score", 0.0)),
+            "column_score": float(telemetry_point.get("column_score", 0.0)),
+            "aggregation_score": float(telemetry_point.get("aggregation_score", 0.0)),
+            "semantic_score": float(telemetry_point.get("semantic_score", 0.0)),
+            "system_confidence": float(telemetry_point.get("system_confidence") or telemetry_point.get("confidence") or (100.0 if valid else 0.0)),
+            "coverage_confidence": float(telemetry_point.get("coverage_confidence", 0.0)),
+            "model_confidence": float(telemetry_point.get("model_confidence", 0.0)),
+            "provider": telemetry_point.get("provider", "local"),
+            "model": telemetry_point.get("model", "deterministic"),
+            "complexity": telemetry_point.get("complexity", "SIMPLE"),
+            "fallback_used": bool(telemetry_point.get("fallback_used", False)),
+            "retry_count": int(telemetry_point.get("retry_count", 0)),
+            "latency_ms": float(telemetry_point.get("latency_ms", 0.0)),
         })
 
     rewards = [float(row[2]) for row in rows]
@@ -2893,6 +4839,7 @@ def load_feedback_metrics() -> dict:
         if str(row[4]).lower().startswith("valid")
     ]
 
+    llm_metrics = LLM_PROVIDER_CLIENT.metrics()
     return {
         "total": len(rows),
         "average_reward": round(sum(rewards) / len(rewards), 2),
@@ -2903,15 +4850,31 @@ def load_feedback_metrics() -> dict:
         "confidence_reliability": telemetry["coverage_score"],
         "average_latency": round(sum(latencies) / len(latencies), 4),
         "trend": trend,
+        "range": _metrics_range_payload(range_key, days),
         "agent_telemetry": telemetry,
         "schema_growth": schema_request_repo.analytics(),
         "enterprise_schema": synthetic_enterprise_engine.generate_catalog()["summary"],
+        "llm_provider": LLM_PROVIDER_CLIENT.health_check(deep=False),
+        "llm_metrics": llm_metrics,
+        "research_metrics": {
+            "multi_hop_success_rate": round((
+                sum(1 for point in telemetry_trend if float(point.get("join_score", 0.0)) >= 90.0 and point.get("valid"))
+                / len(telemetry_trend)
+            ) * 100, 2) if telemetry_trend else 0,
+            "five_plus_table_success_rate": telemetry.get("enterprise_success_rate", 0),
+            "clarification_rate": round((
+                sum(1 for point in telemetry_trend if not point.get("valid"))
+                / len(telemetry_trend)
+            ) * 100, 2) if telemetry_trend else 0,
+            "fallback_rate": telemetry.get("fallback_rate", llm_metrics.get("fallback_rate", 0)),
+        },
     }
 
 
 @app.get("/metrics")
 def metrics_api():
-    return jsonify(load_feedback_metrics())
+    range_key, days = _metrics_range_from_request()
+    return jsonify(load_feedback_metrics(days=days, range_key=range_key))
 
 
 @app.get("/dashboard")

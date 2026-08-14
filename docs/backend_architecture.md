@@ -6,7 +6,9 @@ The backend is a Flask application exposed through ASGI. Root `main.py` remains 
 backend/
   app.py                       API, auth middleware, SQL orchestration, metrics
   auth.py                      identity, sessions, resets, feedback, structured logs
-  synthetic_enterprise_data.py enterprise catalog and schema request repository
+  llm_providers.py             provider selection and fallback policy
+  runtime_config.py            relocatable runtime, cache, SQLite, model paths
+  synthetic_enterprise_data.py enterprise catalog, schema proposals, request repository
   main.py                      ASGI exports
   data/RAG_DOC.xlsx            active schema source
   static/index.html            legacy UI at /legacy
@@ -80,7 +82,9 @@ GET  /metrics
 GET  /schema/catalog
 GET  /schema/relationships
 GET  /schema/er
+GET  /metadata/status
 GET  /enterprise-schema
+GET  /runtime/config
 POST /schema-request
 GET  /schema-requests
 POST /feedback
@@ -91,7 +95,13 @@ Administrator:
 
 ```text
 PATCH /schema-request/<id>/status
+POST  /metadata/refresh
+POST  /schema/studio/tables
+PATCH /schema/studio/tables/<table>
+DELETE /schema/studio/tables/<table>
+POST  /schema/studio/apply-request/<id>
 GET   /feedback
+GET   /diagnostics/provider
 ```
 
 Normal users only receive their own schema requests. Administrators receive the full queue and can set `pending`, `approved`, `generated`, or `rejected`.
@@ -101,8 +111,9 @@ Normal users only receive their own schema requests. Administrators receive the 
 - Auth fields are normalized and length constrained before storage.
 - SQL requests are constrained by the existing read-only validator.
 - Feedback is limited to 5,000 characters.
-- CSV and JSON are the only accepted upload types.
-- Uploads are capped at 1 MB and filenames are reduced to a basename.
+- CSV, Excel, JSON, SQL DDL, and Parquet are accepted by schema request uploads.
+- Uploads are capped at 5 MB and filenames are reduced to a basename.
+- Uploaded samples are inferred into table, column, type, relationship, index, and preview metadata before proposal generation.
 - Attachment contents remain server-side; list responses expose only metadata and `has_attachment`.
 - Login, signup, and password reset routes use a sliding-window IP limiter.
 
@@ -114,8 +125,35 @@ Normal users only receive their own schema requests. Administrators receive the 
 | `SCHEMA_REQUEST_DB_PATH` | Schema governance queue |
 | `AGENT_FEEDBACK_DB_PATH` | Agent feedback and RL telemetry |
 | `SCHEMA_FILE` | Active workbook schema |
-| `backend/.cache/` | FAISS indexes |
+| `SQL_COPILOT_RUNTIME_DIR` | Base generated-data directory |
+| `SQL_COPILOT_CACHE_DIR` | Shared cache root |
+| `SQL_COPILOT_SQLITE_DIR` | SQLite database root |
+| `SQL_COPILOT_LOG_DIR` | Agent/API/planner log root |
+| `SQL_COPILOT_TEMP_DIR` | Backend temp root, also assigned to `TEMP` and `TMP` |
+| `SQL_COPILOT_MODEL_DIR` | Optional model and checkpoint root |
+| `SQL_COPILOT_FAISS_DIR` | FAISS index root |
+| `DYNAMIC_SCHEMA_FILE` | Persisted live Schema Studio overlay |
 | `RL_MODEL_PATH` | Optional PPO model |
+
+`GET /runtime/config` exposes the selected provider and resolved runtime paths for authenticated troubleshooting. The D-drive template keeps runtime data under `D:\Projects\EnterpriseSQLCopilot\.runtime` and optional model artifacts under `D:\AIModels`.
+
+## Dynamic Metadata Engine
+
+The workbook remains the immutable base schema. Schema Studio writes live additions to `DYNAMIC_SCHEMA_FILE`, then refreshes:
+
+- `schema_tables`, column order, types, descriptions, and table metadata
+- relationship graph and Mermaid ER output
+- table and column retrieval documents
+- BM25 immediately, and FAISS when embeddings are configured
+- dynamic planner hints, default display columns, and the cached `EnterpriseSQLCopilot` instance
+
+This lets admins apply generated schema proposals, upload-inferred schemas, or manual table definitions without restarting the backend. Excel-backed tables are protected from live overwrite and delete operations.
+
+## LLM Provider Policy
+
+`backend/llm_providers.py` accepts built-in NVIDIA, custom OpenAI-compatible, Ollama, and local deterministic providers. NVIDIA GPT-OSS-20B uses the direct NVIDIA HTTP chat-completions adapter with `NVIDIA_API_KEY`, `NVIDIA_MODEL`, and `NVIDIA_BASE_URL`. Custom providers can still use the generic `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`, and `LLM_API_BASE` aliases. Providers that are missing credentials, unavailable, rate limited, timed out, network-blocked, or not yet adapter-backed fall back to deterministic SQL generation instead of failing startup.
+
+Remote providers are called only from inside `EnterpriseSQLCopilot` after deterministic intent detection, entity extraction, schema linking, join discovery, and plan validation. Model output must be structured JSON and still passes planner alignment, read-only SQL validation, coverage, and confidence gating.
 
 ## Semantic Planning
 

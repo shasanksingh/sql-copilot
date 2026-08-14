@@ -16,20 +16,22 @@ import {
   PlayCircle,
   Settings,
   ShieldCheck,
-  Sparkles,
   X,
-  Zap
+  Zap,
+  type LucideIcon
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useCopilotStore } from "@/features/store/use-copilot-store";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/features/auth/auth-provider";
+import { Icon3D, type Icon3DTone } from "@/components/ui/icon-3d";
 
 type NavItem = {
   href: Route;
   label: string;
-  icon: React.ComponentType<{ className?: string }>;
+  icon: LucideIcon;
+  tone: Icon3DTone;
   admin?: boolean;
 };
 
@@ -37,52 +39,62 @@ export const navItems: NavItem[] = [
   {
     href: "/dashboard",
     label: "Dashboard",
-    icon: LayoutDashboard
+    icon: LayoutDashboard,
+    tone: "cyan"
   },
   {
     href: "/copilot",
     label: "SQL Copilot",
-    icon: Bot
+    icon: Bot,
+    tone: "cyan"
   },
   {
     href: "/schema-explorer",
     label: "Schema Explorer",
-    icon: Database
+    icon: Database,
+    tone: "indigo"
   },
   {
     href: "/schema-graph",
     label: "Schema Graph",
-    icon: GitBranch
+    icon: GitBranch,
+    tone: "cyan"
   },
   {
     href: "/data-model-studio",
     label: "Data Model Studio",
-    icon: Network
+    icon: Network,
+    tone: "indigo"
   },
   {
     href: "/execution",
     label: "Query Execution",
-    icon: PlayCircle
+    icon: PlayCircle,
+    tone: "amber"
   },
   {
     href: "/planner",
     label: "Query Planner",
-    icon: Braces
+    icon: Braces,
+    tone: "indigo"
   },
   {
     href: "/optimizer",
     label: "SQL Optimizer",
-    icon: Zap
+    icon: Zap,
+    tone: "emerald"
   },
   {
     href: "/settings",
     label: "Settings",
-    icon: Settings
+    icon: Settings,
+    tone: "slate"
   },
   {
     href: "/admin/schema-requests",
     label: "Admin Review",
     icon: ShieldCheck,
+    tone: "emerald",
     admin: true
   }
 ];
@@ -107,15 +119,20 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
   return (
     <aside
       className={cn(
-        "flex h-full flex-col overflow-hidden border-r border-white/10 bg-slate-950/78 backdrop-blur-xl transition-[width] duration-300 ease-out",
+        "flex h-full flex-col overflow-hidden border-r border-white/10 bg-white/[0.88] backdrop-blur-xl transition-[width] duration-300 ease-out dark:bg-slate-950/78",
         mobile ? "w-80 max-w-[86vw]" : "hidden lg:flex",
         compact ? "w-20" : "w-72"
       )}
     >
-      <div className="flex h-16 items-center gap-3 border-b border-white/10 px-5">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-cyan-300 to-indigo-400 text-slate-950 shadow-glow">
-          <Sparkles className="h-5 w-5" />
-        </div>
+      <div
+        className={cn(
+          "flex h-16 items-center border-b border-white/10",
+          compact ? "justify-center px-0" : "gap-3 px-5"
+        )}
+      >
+        {!compact && (
+          <Icon3D icon={Bot} tone="cyan" size="lg" />
+        )}
 
         {!compact && (
           <div className="min-w-0 flex-1">
@@ -141,9 +158,9 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
         ) : (
           <Button
             variant="ghost"
-            className="hidden h-8 w-8 px-0 lg:inline-flex"
+            className={cn("hidden h-9 w-9 px-0 lg:inline-flex", compact && "rounded-md border border-white/10 bg-white/[0.04]")}
             onClick={() => setCollapsed(!collapsed)}
-            aria-label="Collapse sidebar"
+            aria-label={compact ? "Expand sidebar" : "Collapse sidebar"}
             title={compact ? "Expand sidebar" : "Collapse sidebar"}
           >
             {compact ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
@@ -151,10 +168,9 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
         )}
       </div>
 
-      <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3 scrollbar-thin">
+      <nav className={cn("min-h-0 flex-1 space-y-1 overflow-y-auto scrollbar-thin", compact ? "p-2" : "p-3")}>
         {navItems.filter((item) => !item.admin || user?.role === "admin").map((item) => {
           const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
-          const Icon = item.icon;
 
           return (
             <Link
@@ -164,13 +180,16 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
                 mobile && setMobileSidebarOpen(false)
               }
               className={cn(
-                "flex h-10 items-center gap-3 rounded-md px-3 text-sm text-slate-400 transition hover:bg-white/10 hover:text-white",
+                "group flex h-10 items-center rounded-md text-sm text-slate-600 transition dark:text-slate-400",
+                "hover:bg-slate-900/[0.06] hover:text-slate-950 dark:hover:bg-white/10 dark:hover:text-white",
+                compact ? "justify-center px-0" : "gap-3 px-3",
                 active &&
-                  "bg-cyan-300/15 text-cyan-100 ring-1 ring-cyan-300/15"
+                  "bg-cyan-300/15 text-cyan-700 ring-1 ring-cyan-300/20 dark:text-cyan-100"
               )}
+              aria-label={item.label}
               title={compact ? item.label : undefined}
             >
-              <Icon className="h-4 w-4 shrink-0" />
+              <Icon3D icon={item.icon} tone={active ? item.tone : "slate"} size={compact ? "sm" : "xs"} />
 
               {!compact && (
                 <span className="truncate">
@@ -184,15 +203,14 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
 
       {!compact && (
         <div className="m-4 rounded-lg border border-cyan-300/20 bg-gradient-to-br from-cyan-300/10 to-indigo-400/10 p-4">
-          <BarChart3 className="mb-3 h-5 w-5 text-cyan-200" />
+          <Icon3D icon={BarChart3} tone="cyan" size="lg" className="mb-3" />
 
           <div className="text-sm font-medium text-white">
-            LLM-free mode
+            Grounded SQL pipeline
           </div>
 
           <p className="mt-1 text-xs leading-5 text-slate-400">
-            Schema graph, validation, confidence gating,
-            and explainability are handled locally.
+            Schema graph, validation, confidence gating, and NVIDIA assist share the same checked workflow.
           </p>
         </div>
       )}

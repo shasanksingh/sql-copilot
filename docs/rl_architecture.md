@@ -24,7 +24,7 @@ flowchart LR
 5. Agent outcomes can be written to the `agent_feedback` SQLite table.
 6. `/metrics` converts stored outcomes into dashboard quality and operational signals.
 
-RL does not bypass authentication, CSRF, SQL validation, coverage checks, or confidence gating.
+RL does not bypass authentication, CSRF, SQL validation, coverage checks, confidence gating, or provider fallback policy. NVIDIA GPT-OSS-20B output must already be planner-aligned and validator-approved before RL can be considered as an optional optimization signal.
 
 ## Storage Separation
 

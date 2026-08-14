@@ -22,6 +22,7 @@ dist/
 *.egg-info/
 
 # Backend caches and generated data
+.runtime/
 .faiss/
 backend/.cache/
 instance/
@@ -45,6 +46,7 @@ reports_test/*
 node_modules/
 frontend/node_modules/
 frontend/.next/
+frontend/.next-build/
 frontend/out/
 frontend/.vercel/
 frontend/playwright-report/

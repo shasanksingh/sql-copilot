@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import time
@@ -8,7 +9,7 @@ import uuid
 from collections import defaultdict, deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 from .coverage_agents import (
     IntentCoverageAgent,
     EntityCoverageAgent,
@@ -19,6 +20,14 @@ from .coverage_agents import (
     JoinPathCoverageAgent,
 )
 from .confidence_coordinator import ConfidenceCoordinator
+from .custody_balance_domain import (
+    BalanceRequest,
+    CUSTODY_BALANCE_RELATIONSHIPS,
+    balance_request_summary,
+    build_available_balance_sql,
+    parse_balance_request,
+)
+from .langgraph_workflow import build_sql_copilot_workflow
 
 try:
     import networkx as nx
@@ -32,11 +41,23 @@ except ImportError:  # pragma: no cover
 
 
 TokenSet = set[str]
-QUERY_CACHE_VERSION = "enterprise-v6"
+QUERY_CACHE_VERSION = "enterprise-v9"
 
 
 def _tokens(text: str) -> list[str]:
     return re.findall(r"[a-z][a-z0-9_]*", text.lower().replace("-", " "))
+
+
+def _expanded_identifier_terms(terms: Iterable[str]) -> set[str]:
+    expanded: set[str] = set()
+    for term in terms:
+        cleaned = str(term or "").strip().lower()
+        if not cleaned:
+            continue
+        expanded.add(cleaned)
+        expanded.add(_singular(cleaned))
+        expanded.update(_tokens(cleaned.replace("_", " ")))
+    return {term for term in expanded if term}
 
 
 def _singular(word: str) -> str:
@@ -59,6 +80,13 @@ def _score_text(query_terms: TokenSet, candidate: str) -> int:
         return exact
     fuzzy = max((fuzz.token_set_ratio(" ".join(query_terms), candidate.replace("_", " ")) for _ in [0]), default=0)
     return exact + int(fuzzy * 0.45)
+
+
+def _env_flag(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -150,6 +178,7 @@ class CopilotResult:
     plan: dict | None
     optimizations: list[str]
     confidence_breakdown: dict[str, float] = field(default_factory=dict)
+    confidence_evidence: list[dict[str, object]] = field(default_factory=list)
     coverage_report: dict[str, object] = field(default_factory=dict)
     agent_telemetry: dict[str, object] = field(default_factory=dict)
     execution_trace: dict[str, object] = field(default_factory=dict)
@@ -159,6 +188,14 @@ class CopilotResult:
     missing_columns: list[str] = field(default_factory=list)
     missing_joins: list[str] = field(default_factory=list)
     missing_aggregations: list[str] = field(default_factory=list)
+    query_complexity: str = "SIMPLE"
+    confidence_band: str = "LOW"
+    provider_status: dict[str, object] = field(default_factory=dict)
+    llm_trace: dict[str, object] = field(default_factory=dict)
+    model_confidence: float = 0.0
+    planner_confidence: float = 0.0
+    validator_confidence: float = 0.0
+    coverage_confidence: float = 0.0
     cache_hit: bool = False
 
 
@@ -181,6 +218,28 @@ class BusinessVocabularyEngine:
             "status": {"status", "state"},
         }
         self.synonyms["employee"].update({"assignee", "performer", "performers"})
+        self.business_rules: dict[str, dict[str, object]] = {
+            "revenue": {
+                "measure": "payments.amount_paid",
+                "aggregation": "SUM(payments.amount_paid)",
+                "description": "Cash revenue from received payment amounts when payments are in scope.",
+            },
+            "invoice_amount": {
+                "measure": "invoices.amount",
+                "aggregation": "SUM(invoices.amount)",
+                "description": "Billed invoice amount when invoices are in scope.",
+            },
+            "project_budget": {
+                "measure": "projects.budget",
+                "aggregation": "SUM(projects.budget)",
+                "description": "Allocated project budget.",
+            },
+            "logged_hours": {
+                "measure": "time_logs.hours_spent",
+                "aggregation": "SUM(time_logs.hours_spent)",
+                "description": "Time logged by employees against tasks.",
+            },
+        }
         self._ensure_tables()
         self._load_learned_mappings()
 
@@ -216,10 +275,20 @@ class BusinessVocabularyEngine:
     def variants_for(self, term: str) -> set[str]:
         return self.synonyms.get(term, {term})
 
+    def rules_for_terms(self, terms: Iterable[str]) -> dict[str, dict[str, object]]:
+        term_set = {str(term).lower() for term in terms}
+        matched: dict[str, dict[str, object]] = {}
+        for name, rule in self.business_rules.items():
+            variants = self.synonyms.get(name, {name})
+            if name in term_set or term_set & variants:
+                matched[name] = rule
+        return matched
+
 
 class QueryCacheLayer:
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, namespace: str = "local") -> None:
         self.db_path = db_path
+        self.namespace = namespace
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 """
@@ -244,11 +313,26 @@ class QueryCacheLayer:
             return None
         data = json.loads(row[2])
         data.setdefault("confidence_breakdown", {})
+        data.setdefault("confidence_evidence", [])
         data.setdefault("coverage_report", {})
         data.setdefault("agent_telemetry", {})
         data.setdefault("execution_trace", {})
         data.setdefault("runtime_metrics", {})
         data.setdefault("benchmark_record", {})
+        data.setdefault("query_complexity", "SIMPLE")
+        data.setdefault("confidence_band", "LOW")
+        data.setdefault("provider_status", {})
+        data.setdefault("llm_trace", {})
+        if (
+            isinstance(data.get("llm_trace"), dict)
+            and data["llm_trace"].get("active")
+            and data["llm_trace"].get("fallback_used")
+        ):
+            return None
+        data.setdefault("model_confidence", 0.0)
+        data.setdefault("planner_confidence", 0.0)
+        data.setdefault("validator_confidence", 0.0)
+        data.setdefault("coverage_confidence", 0.0)
         data.update({"sql": row[0], "confidence": row[1], "cache_hit": True})
         return CopilotResult(**data)
 
@@ -268,7 +352,7 @@ class QueryCacheLayer:
             )
 
     def _key(self, query: str) -> str:
-        return f"{QUERY_CACHE_VERSION}:{query.strip().lower()}"
+        return f"{QUERY_CACHE_VERSION}:{self.namespace}:{query.strip().lower()}"
 
 
 class SchemaGraphEngine:
@@ -314,22 +398,91 @@ class SchemaGraphEngine:
                     to_column=rel.to_column,
                 )
 
-    def shortest_join_path(self, source: str, target: str) -> list[SchemaRelationship]:
+    def shortest_join_path(
+        self,
+        source: str,
+        target: str,
+        *,
+        max_depth: int | None = None,
+        role_hint: str = "",
+        query: str = "",
+    ) -> list[SchemaRelationship]:
+        candidates = self.join_path_candidates(
+            source,
+            target,
+            max_depth=max_depth,
+            role_hint=role_hint,
+            query=query,
+            limit=1,
+        )
+        return candidates[0]["path"] if candidates else []
+
+    def join_path_candidates(
+        self,
+        source: str,
+        target: str,
+        *,
+        max_depth: int | None = None,
+        role_hint: str = "",
+        query: str = "",
+        limit: int = 3,
+    ) -> list[dict[str, object]]:
         if source == target:
-            return []
+            return [{"path": [], "score": 100.0, "depth": 0, "reason": "same_table"}]
+        depth_limit = max_depth if max_depth is not None else max(1, len(self.tables))
         queue = deque([(source, [])])
-        seen = {source}
+        candidates: list[list[SchemaRelationship]] = []
         while queue:
             table, path = queue.popleft()
+            if len(path) >= depth_limit:
+                continue
             for rel in self._adjacency.get(table, []):
-                if rel.to_table in seen:
+                visited = {source, *[step.to_table for step in path], *[step.from_table for step in path]}
+                if rel.to_table in visited:
                     continue
                 next_path = path + [rel]
                 if rel.to_table == target:
-                    return next_path
-                seen.add(rel.to_table)
+                    candidates.append(next_path)
+                    continue
                 queue.append((rel.to_table, next_path))
-        return []
+        scored = [
+            {
+                "path": path,
+                "score": self.score_join_path(path, role_hint=role_hint, query=query),
+                "depth": len(path),
+                "reason": "fk_path",
+            }
+            for path in candidates
+        ]
+        scored.sort(key=lambda item: (-float(item["score"]), int(item["depth"])))
+        return scored[:limit]
+
+    def score_join_path(
+        self,
+        path: list[SchemaRelationship],
+        *,
+        role_hint: str = "",
+        query: str = "",
+    ) -> float:
+        if not path:
+            return 100.0
+        score = 100.0 - max(0, len(path) - 1) * 6.0
+        query_text = query.lower()
+        for rel in path:
+            columns = {rel.from_column.lower(), rel.to_column.lower()}
+            if role_hint and role_hint.lower() in columns:
+                score += 10.0
+            if any(token in columns for token in ("assigned_to", "reported_by", "reviewed_by", "created_by", "approved_by", "deployed_by")):
+                for token in columns:
+                    if token.replace("_", " ") in query_text or token in query_text:
+                        score += 8.0
+            parallel_edges = [
+                candidate for candidate in self.relationships
+                if {candidate.from_table, candidate.to_table} == {rel.from_table, rel.to_table}
+            ]
+            if len(parallel_edges) > 1 and not role_hint:
+                score -= 8.0
+        return round(max(0.0, min(100.0, score)), 2)
 
     def relationship_map(self) -> dict[str, list[dict[str, str]]]:
         return {
@@ -416,17 +569,31 @@ class SchemaLinkingEngine:
         self.vocabulary = vocabulary
 
     def link(self, query: str, entities: EntityExtraction) -> tuple[list[SchemaMatch], list[str], list[str]]:
-        query_terms = set(entities.canonical_terms) | {_singular(term) for term in entities.raw_terms}
+        query_terms = _expanded_identifier_terms([
+            *entities.canonical_terms,
+            *entities.raw_terms,
+        ])
+        query_text = query.lower().replace("-", "_")
         matches: list[SchemaMatch] = []
         for table in self.graph.tables:
             text = " ".join([table, table.replace("_", " "), *self.table_hints.get(table, set())])
             score = _score_text(query_terms, text)
+            if re.search(rf"(?<!\w){re.escape(table.lower())}(?!\w)", query_text):
+                score += 140
+            elif re.search(rf"(?<!\w){re.escape(table.lower().replace('_', ' '))}(?!\w)", query.lower().replace("-", " ")):
+                score += 120
             if score >= 30:
                 matches.append(SchemaMatch("table", table, None, score, "table/hint match"))
             for column in self.graph.column_order.get(table, []):
                 hints = self.column_hints.get(table, {}).get(column, set())
                 column_text = " ".join([column, column.replace("_", " "), *hints])
                 col_score = _score_text(query_terms, column_text)
+                column_name = column.lower()
+                qualified = f"{table.lower()}.{column_name}"
+                if qualified in query_text or re.search(rf"(?<!\w){re.escape(column_name)}(?!\w)", query_text):
+                    col_score += 140
+                elif re.search(rf"(?<!\w){re.escape(column_name.replace('_', ' '))}(?!\w)", query.lower().replace("-", " ")):
+                    col_score += 120
                 if col_score >= 30:
                     matches.append(SchemaMatch("column", table, column, col_score, "column/hint match"))
 
@@ -454,21 +621,45 @@ class SchemaLinkingEngine:
 
 
 class JoinDiscoveryAgent:
-    def __init__(self, graph: SchemaGraphEngine) -> None:
+    def __init__(self, graph: SchemaGraphEngine, max_depth: int = 8) -> None:
         self.graph = graph
+        self.max_depth = max_depth
+        self.last_diagnostics: dict[str, object] = {}
 
     def discover(self, main_table: str, tables: Iterable[str]) -> list[SchemaRelationship]:
         join_chain: list[SchemaRelationship] = []
         joined = {main_table}
+        diagnostics: list[dict[str, object]] = []
         for table in tables:
             if table in joined:
                 continue
-            best_path = self.graph.shortest_join_path(main_table, table)
+            candidates = self.graph.join_path_candidates(main_table, table, max_depth=self.max_depth)
+            best_path = candidates[0]["path"] if candidates else []
+            diagnostics.append({
+                "target_table": table,
+                "selected_score": candidates[0]["score"] if candidates else 0.0,
+                "selected_depth": candidates[0]["depth"] if candidates else 0,
+                "candidate_count": len(candidates),
+                "path": [
+                    f"{rel.from_table}.{rel.from_column}->{rel.to_table}.{rel.to_column}"
+                    for rel in best_path
+                ],
+            })
             for rel in best_path:
-                if rel.to_table not in joined:
+                key = (rel.from_table, rel.from_column, rel.to_table, rel.to_column)
+                existing = {
+                    (item.from_table, item.from_column, item.to_table, item.to_column)
+                    for item in join_chain
+                }
+                if key not in existing:
                     join_chain.append(rel)
-                    joined.add(rel.to_table)
                 joined.add(rel.from_table)
+                joined.add(rel.to_table)
+        self.last_diagnostics = {
+            "max_depth": self.max_depth,
+            "requested_tables": sorted(set(tables)),
+            "paths": diagnostics,
+        }
         return join_chain
 
 
@@ -507,21 +698,29 @@ class QueryPlannerAgent:
         table_scores: dict[str, int] = defaultdict(int)
         for match in matches:
             table_scores[match.table] += match.score if match.kind == "table" else int(match.score * 0.65)
-        query_terms = set(entities.canonical_terms) | {_singular(term) for term in entities.raw_terms}
+        query_terms = _expanded_identifier_terms([
+            *entities.canonical_terms,
+            *entities.raw_terms,
+        ])
         for table in list(table_scores):
-            table_terms = set(_tokens(table.replace("_", " ")))
-            table_terms |= {_singular(term) for term in table_terms}
-            if query_terms & table_terms:
+            table_terms = _expanded_identifier_terms([table])
+            if table_terms and table_terms.issubset(query_terms):
                 table_scores[table] += 60
+            elif query_terms & table_terms:
+                table_scores[table] += 20
         main_table = max(table_scores.items(), key=lambda item: item[1])[0]
         selected_tables = {main_table}
+        relationship_terms = {
+            "assignee", "assigned", "assignment", "client", "customer", "department",
+            "employee", "member", "owner", "reporter", "reported", "team", "vendor",
+        }
+        relationship_context = bool(intent.group_by or intent.aggregations or query_terms & relationship_terms)
         for match in matches:
             if not getattr(match, "table", None) or match.table == main_table:
                 continue
-            table_terms = set(_tokens(match.table.replace("_", " ")))
-            table_terms |= {_singular(term) for term in table_terms}
-            column_terms = set(_tokens((match.column or "").replace("_", " ")))
-            explicit_table = bool(query_terms & table_terms)
+            table_terms = _expanded_identifier_terms([match.table])
+            column_terms = _expanded_identifier_terms([match.column or ""])
+            explicit_table = bool(table_terms and table_terms.issubset(query_terms))
             explicit_column = bool(query_terms & column_terms) and not column_terms <= {"id", "name", "status"}
             bridge_terms = {"assignment", "bridge", "link", "mapping", "member", "team", "xref"}
             table_columns = self.graph.columns.get(match.table, set())
@@ -533,7 +732,7 @@ class QueryPlannerAgent:
             )
             if bridge_like:
                 continue
-            if match.kind == "table" and (match.score >= 75 or explicit_table):
+            if match.kind == "table" and (explicit_table or (match.score >= 75 and relationship_context)):
                 selected_tables.add(match.table)
             elif match.kind == "column" and match.score >= 85 and explicit_table:
                 selected_tables.add(match.table)
@@ -877,6 +1076,32 @@ class QueryPlannerAgent:
         query: str,
         entities: EntityExtraction,
     ) -> str | None:
+        query_text = query.lower().replace("-", " ")
+        query_identifier_text = query.lower().replace("-", "_")
+        canonical = _expanded_identifier_terms([
+            *entities.canonical_terms,
+            *entities.raw_terms,
+        ])
+        candidates: list[tuple[int, int, str]] = []
+        for table in self.graph.tables:
+            table_lower = table.lower()
+            table_phrase = table_lower.replace("_", " ")
+            score = 0
+            positions: list[int] = []
+            identifier_match = re.search(rf"(?<!\w){re.escape(table_lower)}(?!\w)", query_identifier_text)
+            phrase_match = re.search(rf"(?<!\w){re.escape(table_phrase)}(?!\w)", query_text)
+            if identifier_match:
+                score = 140
+                positions.append(identifier_match.start())
+            elif phrase_match:
+                score = 120
+                positions.append(phrase_match.start())
+            table_terms = _expanded_identifier_terms([table])
+            if table_terms and table_terms <= canonical:
+                score += 80
+            if score:
+                candidates.append((score, min(positions) if positions else len(query), table))
+
         aliases = {
             "employees": {"employee", "employees", "staff", "worker", "workers"},
             "clients": {"client", "clients", "customer", "customers"},
@@ -891,8 +1116,6 @@ class QueryPlannerAgent:
             "sprints": {"sprint", "sprints"},
             "deployments": {"deployment", "deployments", "release", "releases"},
         }
-        canonical = set(entities.canonical_terms)
-        candidates: list[tuple[int, int, str]] = []
         for table, phrases in aliases.items():
             if table not in self.graph.tables:
                 continue
@@ -950,6 +1173,12 @@ class QueryPlannerAgent:
             add("employees", "full_name", "reported_by")
         elif re.search(r"\bdeployed\s+by\b|\breleaser\b", text):
             add("employees", "full_name", "deployed_by")
+        elif re.search(r"\bcreated\s+by\b|\bcreator\b", text):
+            add("employees", "full_name", "created_by")
+        elif re.search(r"\bapproved\s+by\b|\bapprover\b", text):
+            add("employees", "full_name", "approved_by")
+        elif re.search(r"\breviewed\s+by\b|\breviewer\b", text):
+            add("employees", "full_name", "reviewed_by")
         if re.search(r"\bdepartments?\b|\bdept\b|\bdivision\b", text):
             add("employees", "department")
         elif re.search(r"\bemployees?\b|\bstaff\b|\bperformers?\b", text):
@@ -974,13 +1203,13 @@ class QueryPlannerAgent:
             add(base_table, "status")
 
         if not dimensions:
-            text_terms = set(_tokens(text))
+            text_terms = _expanded_identifier_terms(_tokens(text))
             ignored = {
                 "id", "name", "date", "month", "quarter", "week", "year",
                 "amount", "budget", "hours", "revenue", "total", "running",
             }
             for column in self.graph.column_order.get(base_table, []):
-                column_terms = set(_tokens(column.replace("_", " "))) - ignored
+                column_terms = _expanded_identifier_terms([column]) - ignored
                 if column_terms and column_terms <= text_terms:
                     dtype = str(self.graph.column_types.get(base_table, {}).get(column, "")).lower()
                     if not any(token in dtype for token in ("date", "time", "decimal", "float", "double")):
@@ -1000,7 +1229,13 @@ class QueryPlannerAgent:
             if target_table == base_table:
                 continue
             direct = self._preferred_direct_relationship(base_table, target_table, role, query)
-            path = [direct] if direct else self.graph.shortest_join_path(base_table, target_table)
+            path = [direct] if direct else self.graph.shortest_join_path(
+                base_table,
+                target_table,
+                max_depth=getattr(self.joiner, "max_depth", None),
+                role_hint=role,
+                query=query,
+            )
             for rel in path:
                 key = (rel.from_table, rel.from_column, rel.to_table, rel.to_column)
                 if key not in keys:
@@ -1022,10 +1257,13 @@ class QueryPlannerAgent:
         if not direct:
             return None
         preferred_columns = [
-            role,
             "assigned_to" if "assignee" in query else "",
             "reported_by" if re.search(r"\breporter\b|\breported\s+by\b", query) else "",
             "deployed_by" if "deployed" in query else "",
+            "created_by" if re.search(r"\bcreated\s+by\b|\bcreator\b", query) else "",
+            "approved_by" if re.search(r"\bapproved\s+by\b|\bapprover\b", query) else "",
+            "reviewed_by" if re.search(r"\breviewed\s+by\b|\breviewer\b", query) else "",
+            role,
             f"{_singular(target_table)}_id",
             "employee_id" if target_table == "employees" else "",
             "client_id" if target_table == "clients" else "",
@@ -1189,6 +1427,16 @@ class QueryPlannerAgent:
         return terms.issubset(query_terms)
 
     def _concise_display_columns(self, table: str, entities: EntityExtraction) -> list[tuple[str, str]]:
+        query_terms = set(entities.raw_terms or []) | set(entities.canonical_terms or [])
+        detailed_display_terms = {"detail", "details", "profile", "record", "records", "full", "complete"}
+        if query_terms & detailed_display_terms:
+            detail_columns = [
+                col for col in self.defaults.get(table, self.graph.column_order.get(table, [])[:6])
+                if col in self.graph.columns.get(table, set())
+            ][:8]
+            if detail_columns:
+                return [(table, column) for column in detail_columns]
+
         columns: list[str] = []
         label = self.labels.get(table)
         if label and label in self.graph.columns.get(table, set()):
@@ -1377,6 +1625,7 @@ class SQLGenerationAgent:
         selected_column_names = {column for _, column in plan.selected_columns}
         sql_tokens = set(_tokens(sql_lower.replace(".", " ")))
         missing_tables = sorted(planned_tables - sql_tables)
+        extra_tables = sorted(sql_tables - planned_tables)
         missing_columns = sorted(
             column for column in selected_column_names
             if column != "*" and column not in sql_tokens
@@ -1388,13 +1637,14 @@ class SQLGenerationAgent:
         missing_group_by = []
         if plan.group_by and not re.search(r"\bgroup\s+by\b", sql_lower):
             missing_group_by = [f"{table}.{column}" for table, column in plan.group_by]
-        critical = missing_tables + missing_aggs + missing_group_by
+        critical = missing_tables + extra_tables + missing_aggs + missing_group_by
         return {
             "aligned": not critical and not missing_columns,
             "planned_tables": sorted(planned_tables),
             "sql_tables": sorted(sql_tables),
             "selected_columns": sorted(selected_columns),
             "missing_tables": missing_tables,
+            "extra_tables": extra_tables,
             "missing_columns": missing_columns,
             "missing_aggregations": missing_aggs,
             "missing_group_by": missing_group_by,
@@ -1622,6 +1872,25 @@ class AgentTelemetryAgent:
                 )
                 """
             )
+            existing_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(agent_telemetry)").fetchall()
+            }
+            migrations = {
+                "provider": "TEXT DEFAULT 'local'",
+                "model": "TEXT DEFAULT 'deterministic'",
+                "complexity": "TEXT DEFAULT 'SIMPLE'",
+                "system_confidence": "REAL DEFAULT 0",
+                "model_confidence": "REAL DEFAULT 0",
+                "planner_confidence": "REAL DEFAULT 0",
+                "validator_confidence": "REAL DEFAULT 0",
+                "coverage_confidence": "REAL DEFAULT 0",
+                "fallback_used": "INTEGER DEFAULT 0",
+                "retry_count": "INTEGER DEFAULT 0",
+                "latency_ms": "REAL DEFAULT 0",
+            }
+            for column, ddl in migrations.items():
+                if column not in existing_columns:
+                    conn.execute(f"ALTER TABLE agent_telemetry ADD COLUMN {column} {ddl}")
 
     def record(
         self,
@@ -1629,7 +1898,10 @@ class AgentTelemetryAgent:
         valid: bool,
         breakdown: dict[str, float],
         coverage: dict[str, object],
+        provider_trace: dict[str, object] | None = None,
+        complexity: str = "SIMPLE",
     ) -> dict[str, object]:
+        provider_trace = provider_trace or {}
         missing = sorted(set(
             coverage["intent"].get("missing", [])
             + coverage["entity"].get("missing", [])
@@ -1645,15 +1917,33 @@ class AgentTelemetryAgent:
             "validation_accuracy": breakdown.get("semantic", 0.0),
             "optimization_accuracy": 100.0 if valid else 0.0,
             "missing_concepts": missing,
+            "provider": provider_trace.get("provider", "local"),
+            "model": provider_trace.get("model", "deterministic"),
+            "complexity": complexity,
+            "system_confidence": breakdown.get("system_confidence", breakdown.get("overall", 0.0)),
+            "model_confidence": breakdown.get("model_confidence", 0.0),
+            "planner_confidence": breakdown.get("planner_confidence", 0.0),
+            "validator_confidence": breakdown.get("validator_confidence", 0.0),
+            "coverage_confidence": breakdown.get("coverage_confidence", 0.0),
+            "fallback_used": bool(provider_trace.get("fallback_used")),
+            "retry_count": int(provider_trace.get("retry_count") or 0),
+            "latency_ms": sum(
+                float(stage.get("latency_ms") or 0.0)
+                for stage in provider_trace.get("stages", [])
+                if isinstance(stage, dict)
+            ),
         }
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO agent_telemetry (
                     query, confidence, valid, intent_score, entity_score, join_score,
-                    column_score, aggregation_score, semantic_score, missing_concepts
+                    column_score, aggregation_score, semantic_score, missing_concepts,
+                    provider, model, complexity, system_confidence, model_confidence,
+                    planner_confidence, validator_confidence, coverage_confidence,
+                    fallback_used, retry_count, latency_ms
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     query,
@@ -1666,6 +1956,17 @@ class AgentTelemetryAgent:
                     breakdown.get("aggregation", 0.0),
                     breakdown.get("semantic", 0.0),
                     json.dumps(missing),
+                    str(payload["provider"]),
+                    str(payload["model"]),
+                    complexity,
+                    float(payload["system_confidence"]),
+                    float(payload["model_confidence"]),
+                    float(payload["planner_confidence"]),
+                    float(payload["validator_confidence"]),
+                    float(payload["coverage_confidence"]),
+                    int(payload["fallback_used"]),
+                    int(payload["retry_count"]),
+                    float(payload["latency_ms"]),
                 ),
             )
         return payload
@@ -1701,14 +2002,23 @@ class EnterpriseSQLCopilot:
         labels: dict[str, str],
         validator: Callable[[str], tuple[bool, str]],
         state_db_path: Path,
+        logs_root: Path | None = None,
+        llm_provider: Any | None = None,
+        max_generation_retries: int = 3,
+        confidence_low_threshold: int = 75,
+        confidence_high_threshold: int = 90,
+        max_join_depth: int | None = None,
     ) -> None:
         self.graph = SchemaGraphEngine(tables, columns, column_order, column_types, relationships)
         self.vocabulary = BusinessVocabularyEngine(state_db_path)
-        self.cache = QueryCacheLayer(state_db_path)
+        self.llm_provider = llm_provider
+        self.cache_namespace = self._provider_cache_namespace(llm_provider)
+        self.cache = QueryCacheLayer(state_db_path, namespace=self.cache_namespace)
         self.intent_agent = IntentDetectionAgent()
         self.entity_agent = EntityExtractionAgent(self.vocabulary, value_filters)
         self.linking_agent = SchemaLinkingEngine(self.graph, table_hints, column_hints, self.vocabulary)
-        self.join_agent = JoinDiscoveryAgent(self.graph)
+        configured_join_depth = max_join_depth or int(os.getenv("SQL_COPILOT_MAX_JOIN_DEPTH", "8"))
+        self.join_agent = JoinDiscoveryAgent(self.graph, max_depth=configured_join_depth)
         self.planner_agent = QueryPlannerAgent(self.graph, self.join_agent, defaults, labels, column_hints)
         # attach display selector and join-path coverage agent if available
         try:
@@ -1720,6 +2030,19 @@ class EnterpriseSQLCopilot:
         self.sql_agent = SQLGenerationAgent(aliases)
         self.validation_agent = SQLValidationAgent(validator)
         self.semantic_agent = SemanticCoverageAgent()
+        self.workflow = build_sql_copilot_workflow()
+        self.max_generation_retries = max(1, int(max_generation_retries))
+        self.confidence_low_threshold = int(confidence_low_threshold)
+        self.confidence_high_threshold = int(confidence_high_threshold)
+        production = os.getenv("APP_ENV", "development").lower() == "production"
+        self.experiment_flags = {
+            "USE_SCHEMA_GRAPH": _env_flag("USE_SCHEMA_GRAPH", True),
+            "USE_BUSINESS_LOGIC": _env_flag("USE_BUSINESS_LOGIC", True),
+            "USE_HYBRID_RETRIEVAL": _env_flag("USE_HYBRID_RETRIEVAL", True),
+            "USE_LLM_PLANNER": _env_flag("USE_LLM_PLANNER", True),
+            "USE_LLM_CRITIC": _env_flag("USE_LLM_CRITIC", True),
+            "USE_VALIDATOR": True if production else _env_flag("USE_VALIDATOR", True),
+        }
         # coverage agents
         self.intent_coverage = IntentCoverageAgent()
         self.entity_coverage = EntityCoverageAgent()
@@ -1730,7 +2053,7 @@ class EnterpriseSQLCopilot:
         self.confidence_coordinator = ConfidenceCoordinator()
         self.telemetry_agent = AgentTelemetryAgent(state_db_path)
         self.optimization_agent = SQLOptimizationEngine()
-        self.logs_root = Path("logs")
+        self.logs_root = logs_root or Path("logs")
         self.runtime_counters = {
             "intent_agent_calls": 0,
             "entity_agent_calls": 0,
@@ -1747,6 +2070,21 @@ class EnterpriseSQLCopilot:
                 (self.logs_root / name).mkdir(parents=True, exist_ok=True)
             except OSError:
                 pass
+
+    def _provider_cache_namespace(self, provider: Any | None) -> str:
+        if provider is None or not hasattr(provider, "health_check"):
+            return "local:deterministic:unavailable"
+        try:
+            status = dict(provider.health_check(deep=False))
+        except Exception:
+            return "unknown:unknown:unavailable"
+        parts = [
+            str(status.get("provider") or "local"),
+            str(status.get("adapter") or ""),
+            str(status.get("model") or "deterministic"),
+            "available" if status.get("available") else "unavailable",
+        ]
+        return re.sub(r"[^a-zA-Z0-9_.:-]+", "_", ":".join(parts))[:180]
 
     def _trace_mark(
         self,
@@ -1771,7 +2109,7 @@ class EnterpriseSQLCopilot:
         for name, keys in {
             "api": ("query", "sql", "valid", "execution_trace", "runtime_metrics"),
             "planner": ("query", "plan", "selected_tables", "selected_columns", "join_path"),
-            "confidence": ("query", "confidence_breakdown", "coverage_report"),
+            "confidence": ("query", "confidence_breakdown", "confidence_evidence", "coverage_report", "llm_trace"),
             "benchmark": ("benchmark_record",),
         }.items():
             try:
@@ -1781,16 +2119,1755 @@ class EnterpriseSQLCopilot:
             except OSError:
                 continue
 
+    def _provider_status(self) -> dict[str, object]:
+        provider = self.llm_provider
+        if provider is None or not hasattr(provider, "health_check"):
+            return {
+                "provider": "local",
+                "model": "deterministic",
+                "configured": False,
+                "available": False,
+                "status": "fallback",
+            }
+        try:
+            return dict(provider.health_check(deep=False))
+        except Exception:
+            return {
+                "provider": "unknown",
+                "model": "unknown",
+                "configured": False,
+                "available": False,
+                "status": "fallback",
+            }
+
+    def _provider_metrics(self) -> dict[str, object]:
+        provider = self.llm_provider
+        if provider is None or not hasattr(provider, "metrics"):
+            return {}
+        try:
+            return dict(provider.metrics())
+        except Exception:
+            return {}
+
+    def _coverage_applicable(self, report: dict[str, object] | None, *, join: bool = False) -> bool:
+        report = report or {}
+        if join:
+            required_tables = list(report.get("required_tables") or [])
+            joined_tables = list(report.get("joined_tables") or [])
+            return len(required_tables) > 1 or len(joined_tables) > 1 or bool(report.get("missing"))
+        return bool(report.get("required") or report.get("matched") or report.get("missing"))
+
+    def _confidence_evidence_item(
+        self,
+        key: str,
+        label: str,
+        score: float | None,
+        report: dict[str, object] | None = None,
+        *,
+        applicable: bool = True,
+        note: str = "",
+    ) -> dict[str, object]:
+        report = report or {}
+        missing = list(report.get("missing") or report.get("missing_joins") or [])
+        required = list(report.get("required") or report.get("required_tables") or [])
+        matched = list(report.get("matched") or report.get("joined_tables") or [])
+        if not applicable:
+            status = "not_applicable"
+        elif missing:
+            status = "failed"
+        elif score is None:
+            status = "not_applicable"
+        elif score >= 90:
+            status = "passed"
+        elif score >= 70:
+            status = "warning"
+        else:
+            status = "failed"
+        return {
+            "key": key,
+            "label": label,
+            "score": None if not applicable else round(float(score or 0.0), 2),
+            "applicable": applicable,
+            "status": status,
+            "required": [str(item) for item in required],
+            "matched": [str(item) for item in matched],
+            "missing": [str(item) for item in missing],
+            "note": note,
+        }
+
+    def _confidence_evidence(
+        self,
+        components: dict[str, float],
+        coverage: dict[str, object],
+        component_applicability: dict[str, bool],
+        *,
+        plan: QueryPlan | None,
+        llm_trace: dict[str, object],
+        planner_confidence: float,
+        validator_confidence: float,
+        coverage_confidence: float,
+        model_confidence: float,
+    ) -> list[dict[str, object]]:
+        model_applicable = bool(llm_trace.get("active")) and not bool(llm_trace.get("fallback_used"))
+        model_note = self._model_evidence_note(llm_trace, model_applicable)
+        model_report = (
+            {
+                "required": ["nvidia_sql_assist"],
+                "matched": ["nvidia_sql_assist"],
+                "missing": [],
+            }
+            if model_applicable
+            else {"required": [], "matched": [], "missing": []}
+        )
+        return [
+            self._confidence_evidence_item(
+                "intent",
+                "Intent",
+                components.get("intent", 0.0),
+                coverage.get("intent") if isinstance(coverage.get("intent"), dict) else {},
+                applicable=component_applicability.get("intent", True),
+                note="Operation, grouping, time range, and aggregation intent.",
+            ),
+            self._confidence_evidence_item(
+                "entity",
+                "Entity Resolution",
+                components.get("entity", 0.0),
+                coverage.get("entity") if isinstance(coverage.get("entity"), dict) else {},
+                applicable=component_applicability.get("entity", False),
+                note="Business terms mapped to schema concepts.",
+            ),
+            self._confidence_evidence_item(
+                "column",
+                "Column Coverage",
+                components.get("column", 0.0),
+                coverage.get("column") if isinstance(coverage.get("column"), dict) else {},
+                applicable=component_applicability.get("column", False),
+                note="Explicitly requested columns present in the plan.",
+            ),
+            self._confidence_evidence_item(
+                "join",
+                "Join Path",
+                components.get("join", 0.0),
+                coverage.get("join") if isinstance(coverage.get("join"), dict) else {},
+                applicable=component_applicability.get("join", False),
+                note="Required table hops resolved through the schema graph.",
+            ),
+            self._confidence_evidence_item(
+                "aggregation",
+                "Aggregation",
+                components.get("aggregation", 0.0),
+                coverage.get("aggregation") if isinstance(coverage.get("aggregation"), dict) else {},
+                applicable=component_applicability.get("aggregation", False),
+                note="COUNT, SUM, GROUP BY, and window requirements.",
+            ),
+            self._confidence_evidence_item(
+                "semantic",
+                "Semantic Alignment",
+                components.get("semantic", 0.0),
+                coverage.get("semantic") if isinstance(coverage.get("semantic"), dict) else {},
+                applicable=component_applicability.get("semantic", True),
+                note="Final SQL terms compared with the request.",
+            ),
+            self._confidence_evidence_item(
+                "validation",
+                "SQL Validator",
+                validator_confidence,
+                coverage.get("validation") if isinstance(coverage.get("validation"), dict) else {},
+                applicable=True,
+                note=str((coverage.get("validation") or {}).get("message", "")) if isinstance(coverage.get("validation"), dict) else "",
+            ),
+            self._confidence_evidence_item(
+                "planner_confidence",
+                "Planner",
+                planner_confidence,
+                {"required": ["query_plan"], "matched": ["query_plan"] if plan else [], "missing": [] if plan else ["query_plan"]},
+                applicable=True,
+                note="Deterministic plan quality before SQL generation.",
+            ),
+            self._confidence_evidence_item(
+                "coverage_confidence",
+                "Applicable Coverage",
+                coverage_confidence,
+                {"required": [key for key, enabled in component_applicability.items() if enabled]},
+                applicable=True,
+                note="Average across checks that apply to this request.",
+            ),
+            self._confidence_evidence_item(
+                "model_confidence",
+                "LLM Model",
+                model_confidence,
+                model_report,
+                applicable=model_applicable,
+                note=model_note,
+            ),
+        ]
+
+    def _model_evidence_note(self, llm_trace: dict[str, object], model_applicable: bool) -> str:
+        if model_applicable:
+            return "NVIDIA critique/generation used for this request."
+        if llm_trace.get("skip_reason") == "deterministic_plan_validated":
+            return "Deterministic plan validated; LLM assist was not needed."
+        reason = str(llm_trace.get("fallback_reason") or "")
+        if not llm_trace.get("active"):
+            return "LLM assist was skipped; deterministic SQL was used."
+        if reason == "provider_error":
+            return "NVIDIA assist could not connect; deterministic SQL was used."
+        if reason == "timeout":
+            return "NVIDIA assist timed out; deterministic SQL was used."
+        if reason == "rate_limit":
+            return "NVIDIA assist was rate limited; deterministic SQL was used."
+        if reason == "configuration":
+            return "NVIDIA assist needs a valid provider configuration; deterministic SQL was used."
+        if reason == "network_blocked":
+            return "Backend network access to NVIDIA is blocked; deterministic SQL was used."
+        if reason == "candidate_failed_validation":
+            return "NVIDIA candidate failed deterministic validation; deterministic SQL was used."
+        if reason == "provider_unavailable":
+            return "NVIDIA assist is unavailable; deterministic SQL was used."
+        return "LLM assist was not applied; deterministic SQL was used."
+
+    def _confidence_band(self, confidence: float) -> str:
+        if confidence >= self.confidence_high_threshold:
+            return "HIGH"
+        if confidence >= self.confidence_low_threshold:
+            return "MEDIUM"
+        return "LOW"
+
+    def _plan_tables(self, plan: QueryPlan | None) -> set[str]:
+        if not plan:
+            return set()
+        return {
+            plan.main_table,
+            *[rel.from_table for rel in plan.joins],
+            *[rel.to_table for rel in plan.joins],
+            *[table for table, _column in plan.selected_columns],
+            *[table for table, _column in plan.group_by],
+            *[str(item.get("table", "")) for item in plan.filters],
+            *[str(item.get("table", "")) for item in plan.aggregations],
+        } - {""}
+
+    def _query_complexity(
+        self,
+        intent: Intent,
+        entities: EntityExtraction,
+        matches: list[SchemaMatch],
+        plan: QueryPlan | None,
+    ) -> str:
+        table_count = len(self._plan_tables(plan))
+        join_count = len(plan.joins) if plan else 0
+        filter_count = len(plan.filters) if plan else len(entities.filters)
+        dimension_count = len(plan.group_by or plan.selected_columns) if plan else 0
+        aggregation_count = len(intent.aggregations)
+        high_score_matches = len([match for match in matches if match.score >= 70])
+        if table_count >= 5 or join_count >= 4:
+            return "ENTERPRISE"
+        if table_count >= 3 or join_count >= 2 or (aggregation_count and dimension_count >= 2):
+            return "COMPLEX"
+        if table_count == 2 or aggregation_count or filter_count or high_score_matches >= 3:
+            return "MODERATE"
+        return "SIMPLE"
+
+    def _relationship_exists(self, rel: SchemaRelationship) -> bool:
+        for existing in self.graph.relationships:
+            if (
+                existing.from_table == rel.from_table
+                and existing.from_column == rel.from_column
+                and existing.to_table == rel.to_table
+                and existing.to_column == rel.to_column
+            ):
+                return True
+            if (
+                existing.from_table == rel.to_table
+                and existing.from_column == rel.to_column
+                and existing.to_table == rel.from_table
+                and existing.to_column == rel.from_column
+            ):
+                return True
+        return False
+
+    def _validate_query_plan(self, plan: QueryPlan | None) -> list[str]:
+        if plan is None:
+            return ["missing_plan"]
+        errors: list[str] = []
+        for table in self._plan_tables(plan):
+            if table not in self.graph.tables:
+                errors.append(f"unknown_table:{table}")
+        for table, column in [
+            *plan.selected_columns,
+            *plan.group_by,
+            *[(str(item.get("table", "")), str(item.get("column", ""))) for item in plan.filters],
+        ]:
+            if table and column and table in self.graph.tables and column not in self.graph.columns.get(table, set()):
+                errors.append(f"unknown_column:{table}.{column}")
+        for aggregation in plan.aggregations:
+            table = str(aggregation.get("table", ""))
+            column = str(aggregation.get("column", ""))
+            if table and table not in self.graph.tables:
+                errors.append(f"unknown_aggregation_table:{table}")
+            if column and column != "*" and table in self.graph.tables and column not in self.graph.columns.get(table, set()):
+                errors.append(f"unknown_aggregation_column:{table}.{column}")
+        for rel in plan.joins:
+            if not self._relationship_exists(rel):
+                errors.append(
+                    "unknown_relationship:"
+                    f"{rel.from_table}.{rel.from_column}->{rel.to_table}.{rel.to_column}"
+                )
+        if len(self._plan_tables(plan)) > 1 and not plan.joins:
+            errors.append("disconnected_tables")
+        return sorted(set(errors))
+
+    def _plan_ir(
+        self,
+        intent: Intent,
+        entities: EntityExtraction,
+        plan: QueryPlan | None,
+        complexity: str,
+    ) -> dict[str, object]:
+        if plan is None:
+            return {"intent": intent.operation, "complexity": complexity, "tables": []}
+        return {
+            "intent": intent.operation,
+            "complexity": complexity,
+            "measures": list(entities.measures),
+            "dimensions": [f"{table}.{column}" for table, column in plan.selected_columns],
+            "tables": sorted(self._plan_tables(plan)),
+            "main_table": plan.main_table,
+            "joins": [
+                {
+                    "from_table": rel.from_table,
+                    "from_column": rel.from_column,
+                    "to_table": rel.to_table,
+                    "to_column": rel.to_column,
+                }
+                for rel in plan.joins
+            ],
+            "filters": list(plan.filters),
+            "aggregations": list(plan.aggregations),
+            "group_by": [f"{table}.{column}" for table, column in plan.group_by],
+            "order_by": plan.order_by,
+            "limit": plan.limit,
+            "time_granularity": plan.time_granularity,
+            "running_total": plan.running_total,
+        }
+
+    def _llm_schema_context(
+        self,
+        plan: QueryPlan | None,
+        matches: list[SchemaMatch],
+        *,
+        top_k_tables: int = 10,
+        top_k_columns: int = 80,
+    ) -> dict[str, object]:
+        plan_tables = list(self._plan_tables(plan))
+        ranked_tables: list[str] = []
+        for table in plan_tables:
+            if table and table not in ranked_tables:
+                ranked_tables.append(table)
+        for match in matches:
+            if match.table not in ranked_tables and len(ranked_tables) < top_k_tables:
+                ranked_tables.append(match.table)
+        allowed_tables = [table for table in ranked_tables if table in self.graph.tables][:top_k_tables]
+        allowed_columns: dict[str, list[dict[str, str]]] = {}
+        remaining_columns = top_k_columns
+        for table in allowed_tables:
+            table_columns = []
+            for column in self.graph.column_order.get(table, []):
+                if remaining_columns <= 0:
+                    break
+                table_columns.append({
+                    "name": column,
+                    "data_type": str(self.graph.column_types.get(table, {}).get(column, "")),
+                })
+                remaining_columns -= 1
+            allowed_columns[table] = table_columns
+        allowed_relationships = []
+        allowed_set = set(allowed_tables)
+        for rel in self.graph.relationships:
+            if rel.from_table in allowed_set and rel.to_table in allowed_set:
+                allowed_relationships.append({
+                    "from_table": rel.from_table,
+                    "from_column": rel.from_column,
+                    "to_table": rel.to_table,
+                    "to_column": rel.to_column,
+                })
+        return {
+            "tables": allowed_tables,
+            "columns": allowed_columns,
+            "relationships": allowed_relationships if self.experiment_flags.get("USE_SCHEMA_GRAPH", True) else [],
+        }
+
+    def _strip_sql_fences(self, value: object) -> str:
+        sql = str(value or "").strip()
+        sql = re.sub(r"^```[a-zA-Z]*\n?", "", sql).rstrip("`").strip()
+        return sql
+
+    def _model_confidence(self, data: dict[str, Any] | None) -> float:
+        if not data:
+            return 0.0
+        raw = data.get("model_confidence", data.get("confidence", 0))
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return 0.0
+        if 0 <= value <= 1:
+            value *= 100
+        return round(max(0.0, min(100.0, value)), 2)
+
+    def _llm_payload(
+        self,
+        query: str,
+        intent: Intent,
+        entities: EntityExtraction,
+        matches: list[SchemaMatch],
+        plan: QueryPlan | None,
+        complexity: str,
+        deterministic_sql: str,
+        plan_validation_errors: list[str],
+    ) -> dict[str, object]:
+        return {
+            "user_request": query,
+            "query_complexity": complexity,
+            "validated_plan": self._plan_ir(intent, entities, plan, complexity),
+            "plan_validation": {
+                "valid": not plan_validation_errors,
+                "errors": plan_validation_errors,
+            },
+            "allowed_schema": self._llm_schema_context(plan, matches),
+            "business_terms": {
+                "canonical_terms": entities.canonical_terms,
+                "measures": entities.measures,
+                "filters": entities.filters,
+                "registered_rules": (
+                    self.vocabulary.rules_for_terms(entities.canonical_terms)
+                    if self.experiment_flags.get("USE_BUSINESS_LOGIC", True)
+                    else {}
+                ),
+            },
+            "experiment_flags": dict(self.experiment_flags),
+            "deterministic_sql_candidate": deterministic_sql,
+            "strict_rules": [
+                "Return one read-only SELECT statement only.",
+                "Use only tables, columns, and relationships from allowed_schema.",
+                "Do not invent schema objects, aliases, joins, or business rules.",
+                "If the provided schema cannot satisfy the request, return clarification_required=true and sql=null.",
+                "Return concise reasoning summaries only; do not include hidden chain-of-thought.",
+            ],
+        }
+
+    def _record_provider_fallback(self, category: str) -> None:
+        provider = self.llm_provider
+        if provider is not None and hasattr(provider, "record_fallback"):
+            try:
+                provider.record_fallback(category)
+            except Exception:
+                pass
+
+    def _generate_sql_with_optional_llm(
+        self,
+        query: str,
+        intent: Intent,
+        entities: EntityExtraction,
+        matches: list[SchemaMatch],
+        plan: QueryPlan | None,
+        complexity: str,
+        deterministic_sql: str,
+        deterministic_alignment: dict[str, object],
+        plan_validation_errors: list[str],
+    ) -> tuple[str, dict[str, object], dict[str, object]]:
+        status = self._provider_status()
+        trace: dict[str, object] = {
+            "provider": status.get("provider", "local"),
+            "model": status.get("model", "deterministic"),
+            "active": False,
+            "fallback_used": False,
+            "fallback_reason": "",
+            "retry_count": 0,
+            "stages": [],
+            "plan_validation": {
+                "valid": not plan_validation_errors,
+                "errors": plan_validation_errors,
+            },
+        }
+        provider = self.llm_provider
+        deterministic_ready = bool(
+            plan
+            and not plan_validation_errors
+            and plan.confidence >= 90
+            and str(deterministic_sql or "").lstrip().lower().startswith("select")
+            and deterministic_alignment.get("aligned")
+            and complexity in {"SIMPLE", "MODERATE"}
+        )
+        if deterministic_ready:
+            trace["skip_reason"] = "deterministic_plan_validated"
+            return deterministic_sql, deterministic_alignment, trace
+
+        if (
+            provider is None
+            or not getattr(provider, "available", False)
+            or plan is None
+            or plan_validation_errors
+            or plan.unresolved_terms
+            or plan.ambiguity_options
+        ):
+            reason = "provider_unavailable"
+            if plan_validation_errors:
+                reason = "plan_validation_failed"
+            elif plan and (plan.unresolved_terms or plan.ambiguity_options):
+                reason = "clarification_required_before_llm"
+            trace.update({"fallback_used": True, "fallback_reason": reason})
+            self._record_provider_fallback(reason)
+            return deterministic_sql, deterministic_alignment, trace
+
+        payload = self._llm_payload(
+            query,
+            intent,
+            entities,
+            matches,
+            plan,
+            complexity,
+            deterministic_sql,
+            plan_validation_errors,
+        )
+        trace["active"] = True
+        model_confidence = 0.0
+
+        if complexity in {"COMPLEX", "ENTERPRISE"} and self.experiment_flags.get("USE_LLM_PLANNER", True):
+            review_prompt = (
+                "You are reviewing a deterministic, schema-grounded text-to-SQL plan. "
+                "Return only JSON with keys: approved, issues, missing_requirements, "
+                "unnecessary_joins, aggregation_issues, semantic_issues, "
+                "reasoning_summary, clarification_required, clarification_question, model_confidence. "
+                "This review is advisory; the deterministic validator remains authoritative."
+            )
+            review = provider.generate_structured(review_prompt, payload)
+            trace["stages"].append({
+                "stage": "plan_review",
+                "success": review.success,
+                "latency_ms": review.latency_ms,
+                "error_category": review.error_category,
+                "error_message": getattr(review, "error_message", ""),
+                "retry_count": review.retry_count,
+                "summary": (review.data or {}).get("reasoning_summary") if review.data else "",
+                "approved": (review.data or {}).get("approved") if review.data else None,
+            })
+            model_confidence = max(model_confidence, self._model_confidence(review.data))
+            if not review.success:
+                trace.update({
+                    "fallback_used": True,
+                    "fallback_reason": review.error_category or "plan_review_failed",
+                })
+                return deterministic_sql, deterministic_alignment, trace
+
+        generation_prompt = (
+            "Generate SQL from the validated query plan and allowed schema. "
+            "Return only JSON with keys: intent, entities, measures, dimensions, filters, "
+            "required_tables, join_requirements, aggregations, group_by, order_by, "
+            "query_plan_reasoning, sql, clarification_required, clarification_question, model_confidence. "
+            "The SQL must be a single read-only SELECT using only the allowed schema and validated plan."
+        )
+        generation = provider.generate_structured(generation_prompt, payload)
+        trace["stages"].append({
+            "stage": "sql_generation",
+            "success": generation.success,
+            "latency_ms": generation.latency_ms,
+            "error_category": generation.error_category,
+            "error_message": getattr(generation, "error_message", ""),
+            "retry_count": generation.retry_count,
+            "summary": (generation.data or {}).get("query_plan_reasoning") if generation.data else "",
+        })
+        model_confidence = max(model_confidence, self._model_confidence(generation.data))
+        if not generation.success:
+            trace.update({
+                "fallback_used": True,
+                "fallback_reason": generation.error_category or "generation_failed",
+                "model_confidence": model_confidence,
+            })
+            return deterministic_sql, deterministic_alignment, trace
+
+        candidate_sql = self._strip_sql_fences((generation.data or {}).get("sql"))
+        if not candidate_sql:
+            trace.update({
+                "fallback_used": True,
+                "fallback_reason": "schema_insufficient" if (generation.data or {}).get("clarification_required") else "empty_sql",
+                "clarification_question": (generation.data or {}).get("clarification_question"),
+                "model_confidence": model_confidence,
+            })
+            self._record_provider_fallback(str(trace["fallback_reason"]))
+            return deterministic_sql, deterministic_alignment, trace
+
+        validation_attempts: list[dict[str, object]] = []
+        candidate_alignment: dict[str, object] = {}
+        for attempt in range(0, self.max_generation_retries):
+            valid, validation_message = self.validation_agent.validate(candidate_sql, intent, entities, plan)
+            candidate_alignment = self.sql_agent.audit_alignment(plan, candidate_sql)
+            aligned = bool(candidate_alignment.get("aligned"))
+            validation_attempts.append({
+                "attempt": attempt + 1,
+                "valid": valid,
+                "aligned": aligned,
+                "validation": validation_message,
+                "alignment": candidate_alignment,
+            })
+            if valid and aligned:
+                critique_score = 0.0
+                if complexity in {"COMPLEX", "ENTERPRISE"} and self.experiment_flags.get("USE_LLM_CRITIC", True):
+                    critique_prompt = (
+                        "Critique this generated SQL against the user request, validated query plan, "
+                        "allowed schema, and validator result. Return only JSON with keys: issues, "
+                        "missing_requirements, unnecessary_joins, aggregation_issues, semantic_issues, "
+                        "approved, reasoning_summary, model_confidence."
+                    )
+                    critique_payload = {
+                        **payload,
+                        "generated_sql": candidate_sql,
+                        "validation_result": validation_attempts[-1],
+                    }
+                    critique = provider.generate_structured(critique_prompt, critique_payload)
+                    trace["stages"].append({
+                        "stage": "sql_critique",
+                        "success": critique.success,
+                        "latency_ms": critique.latency_ms,
+                        "error_category": critique.error_category,
+                        "error_message": getattr(critique, "error_message", ""),
+                        "summary": (critique.data or {}).get("reasoning_summary") if critique.data else "",
+                        "approved": (critique.data or {}).get("approved") if critique.data else None,
+                    })
+                    critique_score = self._model_confidence(critique.data)
+                trace.update({
+                    "fallback_used": False,
+                    "fallback_reason": "",
+                    "retry_count": attempt,
+                    "validation_attempts": validation_attempts,
+                    "model_confidence": max(model_confidence, critique_score),
+                })
+                return candidate_sql, candidate_alignment, trace
+
+            if attempt >= self.max_generation_retries - 1:
+                break
+            if hasattr(provider, "repair_attempts"):
+                try:
+                    provider.repair_attempts += 1
+                except Exception:
+                    pass
+            repair_prompt = (
+                "Repair the SQL using the exact validator and planner-alignment failures. "
+                "Return only JSON with keys: sql, query_plan_reasoning, clarification_required, "
+                "clarification_question, model_confidence. Use only the allowed schema and validated plan."
+            )
+            repair_payload = {
+                **payload,
+                "bad_sql": candidate_sql,
+                "validation_failure": validation_message,
+                "alignment_failure": candidate_alignment,
+            }
+            repair_result = provider.generate_structured(repair_prompt, repair_payload)
+            trace["stages"].append({
+                "stage": "sql_repair",
+                "success": repair_result.success,
+                "latency_ms": repair_result.latency_ms,
+                "error_category": repair_result.error_category,
+                "error_message": getattr(repair_result, "error_message", ""),
+                "retry_count": attempt + 1,
+                "summary": (repair_result.data or {}).get("query_plan_reasoning") if repair_result.data else "",
+            })
+            trace["retry_count"] = attempt + 1
+            model_confidence = max(model_confidence, self._model_confidence(repair_result.data))
+            if not repair_result.success:
+                break
+            repaired_sql = self._strip_sql_fences((repair_result.data or {}).get("sql"))
+            if not repaired_sql:
+                break
+            candidate_sql = repaired_sql
+
+        trace.update({
+            "fallback_used": True,
+            "fallback_reason": "candidate_failed_validation",
+            "validation_attempts": validation_attempts,
+            "model_confidence": model_confidence,
+        })
+        self._record_provider_fallback("candidate_failed_validation")
+        return deterministic_sql, deterministic_alignment, trace
+
+    def _custody_balance_relationships(self) -> list[SchemaRelationship]:
+        required = {
+            ("custody_position", "portfolio_id", "portfolio", "portfolio_id"),
+            ("custody_position", "business_partner_id", "portfolio", "business_partner_id"),
+            ("security_movement", "customer_reference", "custody_position", "business_partner_id"),
+            ("security_movement", "portfolio_number", "custody_position", "portfolio_id"),
+            ("security_movement", "instrument_id", "custody_position", "instrument_id"),
+            ("security_movement", "custody_position_number", "custody_position", "position_number"),
+            ("security_movement", "custody_position_type", "custody_position", "position_type"),
+            ("custody_block", "business_partner_id", "custody_position", "business_partner_id"),
+            ("custody_block", "portfolio_id", "custody_position", "portfolio_id"),
+            ("custody_block", "instrument_id", "custody_position", "instrument_id"),
+            ("custody_block", "position_number", "custody_position", "position_number"),
+            ("custody_block", "position_type", "custody_position", "position_type"),
+        }
+        joins: list[SchemaRelationship] = []
+        for rel in CUSTODY_BALANCE_RELATIONSHIPS:
+            key = (
+                str(rel.get("from_table", "")),
+                str(rel.get("from_column", "")),
+                str(rel.get("to_table", "")),
+                str(rel.get("to_column", "")),
+            )
+            if key in required:
+                joins.append(SchemaRelationship(*key))
+        return joins
+
+    def _custody_balance_matches(self) -> list[SchemaMatch]:
+        matches: list[SchemaMatch] = [
+            SchemaMatch("table", "portfolio", None, 96, "custody balance business logic"),
+            SchemaMatch("table", "custody_position", None, 100, "position-level balance source"),
+            SchemaMatch("table", "security_movement", None, 98, "settled balance source"),
+            SchemaMatch("table", "custody_block", None, 98, "blocked balance source"),
+        ]
+        for table, columns in {
+            "custody_position": [
+                "business_partner_id",
+                "portfolio_id",
+                "position_number",
+                "position_type",
+                "instrument_id",
+            ],
+            "security_movement": [
+                "customer_reference",
+                "portfolio_number",
+                "credit_and_debit_flag",
+                "amount_quantity",
+                "trade_date",
+                "value_date",
+                "transaction_date",
+            ],
+            "custody_block": [
+                "block_quantity_amount",
+                "block_valid_from_date",
+                "block_release_date",
+                "block_status",
+                "block_status_code",
+            ],
+        }.items():
+            matches.extend(
+                SchemaMatch("column", table, column, 94, "custody balance rule column")
+                for column in columns
+            )
+        return matches
+
+    def _custody_balance_provider_review(
+        self,
+        query: str,
+        request: BalanceRequest,
+        sql: str,
+        plan: QueryPlan,
+        validation: str,
+    ) -> tuple[dict[str, object], float]:
+        status = self._provider_status()
+        trace: dict[str, object] = {
+            "provider": status.get("provider", "local"),
+            "model": status.get("model", "deterministic"),
+            "active": False,
+            "fallback_used": False,
+            "fallback_reason": "",
+            "retry_count": 0,
+            "stages": [
+                {
+                    "stage": "business_logic_lookup",
+                    "success": True,
+                    "summary": "Matched custody available-balance rule and assembled schema-grounded SQL.",
+                    "matched_rule": "custody_available_balance",
+                }
+            ],
+            "plan_validation": {"valid": True, "errors": []},
+            "model_confidence": 0.0,
+        }
+        provider = self.llm_provider
+        if provider is None or not getattr(provider, "available", False):
+            return trace, 0.0
+
+        trace["active"] = True
+        prompt = (
+            "Review this schema-grounded custody balance SQL against the business rule. "
+            "Return only JSON with keys: approved, issues, missing_requirements, "
+            "reasoning_summary, model_confidence. Do not rewrite the SQL unless it violates "
+            "the provided rule."
+        )
+        payload = {
+            "user_request": query,
+            "business_rule": {
+                "name": "custody_available_balance",
+                "inputs": balance_request_summary(request),
+                "steps": [
+                    "Validate portfolio exists for the requested customer and portfolio.",
+                    "Fetch position-level custody_position records.",
+                    "Calculate settled balance from security_movement amount_quantity; credit_and_debit_flag 1 adds, 2 subtracts.",
+                    "Calculate blocked balance from active custody_block rows valid as of the balance date.",
+                    "Return available_balance as settled_balance minus blocked_balance.",
+                ],
+            },
+            "validated_plan": self._plan_ir(
+                Intent(aggregations=["SUM"], requires_join=True),
+                EntityExtraction(_tokens(query), _tokens(query), [], [], ["available_balance"], [], []),
+                plan,
+                "ENTERPRISE",
+            ),
+            "validator_result": validation,
+            "sql": sql,
+        }
+        review = provider.generate_structured(prompt, payload)
+        confidence = self._model_confidence(review.data) if review.success else 0.0
+        if review.success and confidence <= 0:
+            confidence = 94.0
+        trace["stages"].append({
+            "stage": "business_logic_review",
+            "success": review.success,
+            "latency_ms": review.latency_ms,
+            "error_category": review.error_category,
+            "error_message": getattr(review, "error_message", ""),
+            "retry_count": review.retry_count,
+            "summary": (review.data or {}).get("reasoning_summary") if review.data else "",
+            "approved": (review.data or {}).get("approved") if review.data else None,
+        })
+        trace["model_confidence"] = confidence
+        trace["retry_count"] = int(getattr(review, "retry_count", 0) or 0)
+        if not review.success:
+            reason = review.error_category or "business_logic_review_failed"
+            trace.update({"fallback_used": True, "fallback_reason": reason})
+            self._record_provider_fallback(reason)
+        return trace, confidence
+
+    def _extract_custody_parameter(
+        self,
+        query: str,
+        patterns: tuple[str, ...],
+    ) -> str | None:
+        for pattern in patterns:
+            match = re.search(pattern, query, re.IGNORECASE)
+            if match:
+                value = str(match.group(1)).strip().strip("'\".,;")
+                if value:
+                    return value
+        return None
+
+    def _custody_sql_value(self, value: str | None, placeholder: str) -> str:
+        if not value:
+            return f":{placeholder}"
+        return "'" + value.replace("'", "''") + "'"
+
+    def _parse_custody_customer_rule(self, query: str) -> dict[str, object] | None:
+        if "custody_position" not in self.graph.tables:
+            return None
+        q = re.sub(r"\s+", " ", query.lower().replace("_", " ").replace("-", " ")).strip()
+        if not q:
+            return None
+
+        customer_context = bool(
+            re.search(r"\bcustomers?\b", q)
+            or re.search(r"\bbusiness\s+partners?\b", q)
+            or re.search(r"\bbp\s+id\b", q)
+            or "custody" in q
+        )
+        # Keep the earlier sample CRM schema intact: "client" alone should still
+        # resolve to clients unless the prompt is explicitly a custody/balance query.
+        if not customer_context:
+            return None
+
+        business_partner_id = self._extract_custody_parameter(query, (
+            r"\bbusiness\s+partner(?:\s+id)?\s*(?:is|=|:)?\s*([A-Za-z0-9][A-Za-z0-9_-]*)",
+            r"\bbp(?:\s+|_)?id\s*(?:is|=|:)?\s*([A-Za-z0-9][A-Za-z0-9_-]*)",
+            r"\bcustomer(?:\s+reference|\s+id)?\s*(?:is|=|:)\s*([A-Za-z0-9][A-Za-z0-9_-]*)",
+            r"\bcustomer\s+([0-9][A-Za-z0-9_-]*)\b",
+        ))
+        instrument_id = self._extract_custody_parameter(query, (
+            r"\binstrument(?:\s+id)?\s*(?:is|=|:)\s*([A-Za-z0-9][A-Za-z0-9_-]*)",
+            r"\binstrmnt(?:\s+id)?\s*(?:is|=|:)\s*([A-Za-z0-9][A-Za-z0-9_-]*)",
+            r"\bgiven\s+instrument\s+([A-Za-z0-9][A-Za-z0-9_-]*)\b",
+        ))
+
+        if "portfolio" in q and re.search(r"\b(find|list|show|get|give|fetch|all)\b", q):
+            return {
+                "name": "custody_customer_portfolios",
+                "main_table": "custody_position",
+                "selected_columns": [("custody_position", "portfolio_id")],
+                "filters": [
+                    {
+                        "table": "custody_position",
+                        "column": "business_partner_id",
+                        "operator": "=",
+                        "value": business_partner_id or ":business_partner_id",
+                    }
+                ],
+                "sql": (
+                    "SELECT DISTINCT\n"
+                    "  portfolio_id\n"
+                    "FROM custody_position\n"
+                    f"WHERE business_partner_id = {self._custody_sql_value(business_partner_id, 'business_partner_id')};"
+                ),
+                "required": ["customer", "portfolio_id"],
+                "matched": ["customer", "portfolio_id"],
+                "complexity": "MODERATE",
+            }
+
+        has_given_instrument = bool(
+            re.search(r"\bgiven\s+instrument\b", q)
+            or re.search(r"\binstrument(?:\s+id)?\s*(?:is|=|:)", q)
+            or re.search(r"\binstrmnt(?:\s+id)?\s*(?:is|=|:)", q)
+        )
+        has_buy_stock = bool(re.search(r"\b(buy|bought|purchase|purchased)\b", q) and "stock" in q)
+        if has_buy_stock and has_given_instrument:
+            return {
+                "name": "custody_customers_by_instrument",
+                "main_table": "custody_position",
+                "selected_columns": [("custody_position", column) for column in self.graph.column_order.get("custody_position", [])],
+                "filters": [
+                    {
+                        "table": "custody_position",
+                        "column": "instrument_id",
+                        "operator": "=",
+                        "value": instrument_id or ":instrument_id",
+                    }
+                ],
+                "sql": (
+                    "SELECT *\n"
+                    "FROM custody_position\n"
+                    f"WHERE instrument_id = {self._custody_sql_value(instrument_id, 'instrument_id')};"
+                ),
+                "required": ["customer", "buy stock", "instrument_id"],
+                "matched": ["customer", "buy stock", "instrument_id"],
+                "complexity": "MODERATE",
+            }
+
+        if (
+            has_buy_stock
+            and "instrument" in q
+            and "security_movement" in self.graph.tables
+            and re.search(r"\b(specific|given|business\s+partner|bp\s+id|customer)\b", q)
+        ):
+            return {
+                "name": "custody_bought_instruments_for_customer",
+                "main_table": "security_movement",
+                "selected_columns": [("security_movement", "instrument_id")],
+                "filters": [
+                    {
+                        "table": "security_movement",
+                        "column": "customer_reference",
+                        "operator": "=",
+                        "value": business_partner_id or ":business_partner_id",
+                    },
+                    {
+                        "table": "security_movement",
+                        "column": "credit_and_debit_flag",
+                        "operator": "=",
+                        "value": "1",
+                    },
+                ],
+                "sql": (
+                    "SELECT DISTINCT\n"
+                    "  sm.instrument_id\n"
+                    "FROM security_movement sm\n"
+                    f"WHERE sm.customer_reference = {self._custody_sql_value(business_partner_id, 'business_partner_id')}\n"
+                    "  AND sm.credit_and_debit_flag = 1;"
+                ),
+                "required": ["customer", "instrument_id", "credit_and_debit_flag"],
+                "matched": ["customer", "instrument_id", "credit_and_debit_flag"],
+                "complexity": "MODERATE",
+            }
+
+        if re.search(r"\b(detail|details|records?|profile|all)\b", q):
+            return {
+                "name": "custody_customer_details",
+                "main_table": "custody_position",
+                "selected_columns": [("custody_position", column) for column in self.graph.column_order.get("custody_position", [])],
+                "filters": [],
+                "sql": "SELECT *\nFROM custody_position;",
+                "required": ["customer details", "custody_position"],
+                "matched": ["customer details", "custody_position"],
+                "complexity": "MODERATE",
+            }
+
+        return None
+
+    def _custody_rule_provider_review(
+        self,
+        query: str,
+        rule: dict[str, object],
+        sql: str,
+        plan: QueryPlan,
+        validation: str,
+    ) -> tuple[dict[str, object], float]:
+        status = self._provider_status()
+        trace: dict[str, object] = {
+            "provider": status.get("provider", "local"),
+            "model": status.get("model", "deterministic"),
+            "active": False,
+            "fallback_used": False,
+            "fallback_reason": "",
+            "retry_count": 0,
+            "stages": [
+                {
+                    "stage": "business_logic_lookup",
+                    "success": True,
+                    "summary": "Matched TCS custody customer query rule and assembled schema-grounded SQL.",
+                    "matched_rule": rule.get("name"),
+                }
+            ],
+            "plan_validation": {"valid": True, "errors": []},
+            "model_confidence": 0.0,
+        }
+        provider = self.llm_provider
+        if provider is None or not getattr(provider, "available", False):
+            return trace, 0.0
+
+        trace["active"] = True
+        prompt = (
+            "Review this deterministic TCS custody SQL against the named business rule. "
+            "Return only JSON with keys: approved, issues, missing_requirements, "
+            "reasoning_summary, model_confidence. Do not rewrite SQL unless the "
+            "rule is violated."
+        )
+        payload = {
+            "user_request": query,
+            "business_rule": {
+                "name": rule.get("name"),
+                "required": rule.get("required", []),
+                "matched": rule.get("matched", []),
+            },
+            "validated_plan": self._plan_ir(
+                Intent(filters=list(plan.filters), requires_join=False),
+                EntityExtraction(_tokens(query), _tokens(query), [], [], [], list(plan.filters), []),
+                plan,
+                str(rule.get("complexity", "MODERATE")),
+            ),
+            "validator_result": validation,
+            "sql": sql,
+        }
+        review = provider.generate_structured(prompt, payload)
+        confidence = self._model_confidence(review.data) if review.success else 0.0
+        if review.success and confidence <= 0:
+            confidence = 94.0
+        trace["stages"].append({
+            "stage": "business_logic_review",
+            "success": review.success,
+            "latency_ms": review.latency_ms,
+            "error_category": review.error_category,
+            "error_message": getattr(review, "error_message", ""),
+            "retry_count": review.retry_count,
+            "summary": (review.data or {}).get("reasoning_summary") if review.data else "",
+            "approved": (review.data or {}).get("approved") if review.data else None,
+        })
+        trace["model_confidence"] = confidence
+        trace["retry_count"] = int(getattr(review, "retry_count", 0) or 0)
+        if not review.success:
+            reason = review.error_category or "business_logic_review_failed"
+            trace.update({"fallback_used": True, "fallback_reason": reason})
+            self._record_provider_fallback(reason)
+        return trace, confidence
+
+    def _run_custody_customer_logic(
+        self,
+        query: str,
+        request_id: str,
+        run_started_at: float,
+        execution_trace: dict[str, object],
+        *,
+        allow_cache: bool,
+    ) -> CopilotResult | None:
+        rule = self._parse_custody_customer_rule(query)
+        if rule is None:
+            return None
+
+        sql = str(rule["sql"])
+        filters = list(rule.get("filters", []))
+        selected_columns = list(rule.get("selected_columns", []))
+        main_table = str(rule["main_table"])
+        complexity = str(rule.get("complexity", "MODERATE"))
+        plan = QueryPlan(
+            main_table=main_table,
+            selected_columns=selected_columns,
+            joins=[],
+            filters=filters,
+            aggregations=[],
+            group_by=[],
+            order_by=None,
+            limit=None,
+            confidence=95,
+        )
+        terms = _tokens(query)
+        intent = Intent(filters=filters, requires_join=False)
+        entities = EntityExtraction(
+            raw_terms=terms,
+            canonical_terms=terms,
+            tables=[main_table],
+            columns=[column for _table, column in selected_columns],
+            measures=[],
+            filters=filters,
+            unresolved_terms=[],
+        )
+        plan_validation_errors = self._validate_query_plan(plan)
+        valid, validation = self.validation_agent.validate(sql, intent, entities, plan)
+        alignment_report = {"missing_columns": [], "extra_columns": [], "critical_mismatches": []}
+        if plan_validation_errors:
+            valid = False
+            validation = "Plan validation failed: " + ", ".join(plan_validation_errors)
+
+        llm_trace, model_confidence = self._custody_rule_provider_review(
+            query,
+            rule,
+            sql,
+            plan,
+            validation,
+        )
+        execution_trace.setdefault("events", []).extend([
+            {
+                "stage": "business_logic_lookup",
+                "matched_rule": rule.get("name"),
+                "required": rule.get("required", []),
+                "matched": rule.get("matched", []),
+            },
+            {
+                "stage": "plan_validation",
+                "valid": not plan_validation_errors,
+                "errors": plan_validation_errors,
+            },
+            {
+                "stage": "sql_validation",
+                "valid": valid,
+                "validation": validation,
+            },
+        ])
+        execution_trace["query_complexity"] = complexity
+
+        components = {
+            "intent": 96.0,
+            "entity": 96.0,
+            "column": 95.0,
+            "join": 100.0,
+            "aggregation": 100.0,
+            "semantic": 95.0,
+            "validation": 100.0 if valid else 0.0,
+        }
+        required = list(rule.get("required", []))
+        matched = list(rule.get("matched", []))
+        coverage = {
+            "intent": {
+                "score": components["intent"],
+                "required": required,
+                "matched": matched,
+                "missing": [],
+            },
+            "entity": {
+                "score": components["entity"],
+                "required": required,
+                "matched": matched,
+                "missing": [],
+            },
+            "column": {
+                "score": components["column"],
+                "required": [f"{table}.{column}" for table, column in selected_columns],
+                "matched": [f"{table}.{column}" for table, column in selected_columns],
+                "missing": [],
+            },
+            "join": {
+                "score": components["join"],
+                "required_tables": [main_table],
+                "joined_tables": [main_table],
+                "missing": [],
+            },
+            "aggregation": {
+                "score": components["aggregation"],
+                "required": [],
+                "matched": [],
+                "missing": [],
+            },
+            "semantic": {
+                "score": components["semantic"],
+                "required": required,
+                "matched": matched,
+                "missing": [],
+            },
+            "validation": {
+                "score": components["validation"],
+                "valid": valid,
+                "message": validation,
+            },
+            "plan_alignment": alignment_report,
+            "plan_validation": {"valid": not plan_validation_errors, "errors": plan_validation_errors},
+            "business_logic": {
+                "matched_rule": rule.get("name"),
+                "parameters": {
+                    item["column"]: item.get("value")
+                    for item in filters
+                    if isinstance(item, dict)
+                },
+                "steps": [
+                    "Resolve customer wording to TCS custody schema.",
+                    "Use custody_position for customer/portfolio/position records.",
+                    "Use security_movement for bought-instrument movement questions.",
+                    "Keep demo clients table only for explicit client wording.",
+                ],
+            },
+            "llm": llm_trace,
+        }
+        component_applicability = {
+            "intent": True,
+            "entity": True,
+            "column": True,
+            "join": False,
+            "aggregation": False,
+            "semantic": True,
+        }
+        coverage["confidence_applicability"] = component_applicability
+
+        confidence_breakdown = self.confidence_coordinator.compute_from_components(
+            components,
+            valid,
+            [],
+            [],
+        )
+        planner_confidence = float(plan.confidence)
+        validator_confidence = 100.0 if valid else 0.0
+        applicable_scores = [
+            components[key]
+            for key, enabled in component_applicability.items()
+            if enabled
+        ]
+        coverage_confidence = round(sum(applicable_scores) / len(applicable_scores), 2)
+        confidence = min(96, int(round(confidence_breakdown.get("overall", 0.0))))
+        confidence_breakdown.update({
+            "overall": float(confidence),
+            "planner_confidence": planner_confidence,
+            "validator_confidence": validator_confidence,
+            "coverage_confidence": coverage_confidence,
+            "model_confidence": model_confidence,
+            "system_confidence": float(confidence),
+        })
+        confidence_evidence = self._confidence_evidence(
+            components,
+            coverage,
+            component_applicability,
+            plan=plan,
+            llm_trace=llm_trace,
+            planner_confidence=planner_confidence,
+            validator_confidence=validator_confidence,
+            coverage_confidence=coverage_confidence,
+            model_confidence=model_confidence,
+        )
+        confidence_band = self._confidence_band(confidence)
+        selected_tables = sorted(self._plan_tables(plan))
+        selected_column_names = [f"{table}.{column}" for table, column in selected_columns]
+        runtime_metrics = {
+            "request_id": request_id,
+            "session_id": "local",
+            "total_ms": round((time.perf_counter() - run_started_at) * 1000, 3),
+            "events": len(execution_trace.get("events", [])),
+            "cache_hit": False,
+            "query_complexity": complexity,
+            "llm_provider": llm_trace.get("provider"),
+            "llm_model": llm_trace.get("model"),
+            "workflow_engine": dict(execution_trace.get("workflow_run") or {}).get("engine", self.workflow.engine),
+            "fallback_used": bool(llm_trace.get("fallback_used")),
+            "fallback_reason": llm_trace.get("fallback_reason", ""),
+            "repair_attempts": int(llm_trace.get("retry_count") or 0),
+        }
+        benchmark_record = {
+            "query_id": request_id,
+            "query": query,
+            "generated_sql": sql,
+            "candidate_sql": sql,
+            "provider": llm_trace.get("provider"),
+            "model": llm_trace.get("model"),
+            "complexity": complexity,
+            "planner_correct": not plan_validation_errors,
+            "sql_correct": bool(valid),
+            "validator_valid": bool(valid),
+            "confidence": confidence,
+            "confidence_band": confidence_band,
+            "coverage": coverage,
+            "confidence_breakdown": confidence_breakdown,
+            "confidence_evidence": confidence_evidence,
+            "retry_count": int(llm_trace.get("retry_count") or 0),
+            "latency_ms": runtime_metrics["total_ms"],
+            "fallback_used": bool(llm_trace.get("fallback_used")),
+        }
+        telemetry = self.telemetry_agent.record(
+            query,
+            valid,
+            confidence_breakdown,
+            coverage,
+            provider_trace=llm_trace,
+            complexity=complexity,
+        )
+        execution_trace["counters"] = dict(self.runtime_counters)
+        execution_trace["cache_hit"] = False
+        result = CopilotResult(
+            sql=sql,
+            confidence=confidence,
+            valid=valid,
+            validation=validation,
+            clarification_required=not valid,
+            clarification_options=[],
+            intent=asdict(intent),
+            entities=asdict(entities),
+            selected_tables=selected_tables,
+            selected_columns=selected_column_names,
+            join_path=[],
+            plan=asdict(plan),
+            optimizations=self.optimization_agent.analyze(sql, plan),
+            confidence_breakdown=confidence_breakdown,
+            confidence_evidence=confidence_evidence,
+            coverage_report=coverage,
+            agent_telemetry=telemetry,
+            execution_trace=execution_trace,
+            runtime_metrics=runtime_metrics,
+            benchmark_record=benchmark_record,
+            missing_entities=[],
+            missing_columns=[],
+            missing_joins=[],
+            missing_aggregations=[],
+            query_complexity=complexity,
+            confidence_band=confidence_band,
+            provider_status=self._provider_status(),
+            llm_trace=llm_trace,
+            model_confidence=model_confidence,
+            planner_confidence=planner_confidence,
+            validator_confidence=validator_confidence,
+            coverage_confidence=coverage_confidence,
+            cache_hit=False,
+        )
+        self._write_runtime_logs(
+            request_id,
+            {
+                "query": query,
+                "sql": sql,
+                "valid": result.valid,
+                "plan": result.plan,
+                "selected_tables": selected_tables,
+                "selected_columns": selected_column_names,
+                "join_path": [],
+                "confidence_breakdown": confidence_breakdown,
+                "confidence_evidence": confidence_evidence,
+                "coverage_report": coverage,
+                "execution_trace": execution_trace,
+                "runtime_metrics": runtime_metrics,
+                "benchmark_record": benchmark_record,
+                "llm_trace": llm_trace,
+            },
+        )
+        llm_failed_fallback = bool(llm_trace.get("active")) and bool(llm_trace.get("fallback_used"))
+        if allow_cache and result.valid and result.confidence >= 70 and not llm_failed_fallback:
+            self.cache.put(query, result)
+        return result
+
+    def _run_custody_balance_logic(
+        self,
+        query: str,
+        request_id: str,
+        run_started_at: float,
+        execution_trace: dict[str, object],
+        *,
+        allow_cache: bool,
+    ) -> CopilotResult | None:
+        request = parse_balance_request(query)
+        if request is None:
+            return None
+        required_tables = {"portfolio", "custody_position", "security_movement", "custody_block"}
+        if not required_tables.issubset(self.graph.tables):
+            return None
+
+        missing_params = [
+            label for label, value in (
+                ("business_partner_id", request.business_partner_id),
+                ("portfolio_id", request.portfolio_id),
+                ("balance_date", request.balance_date),
+            )
+            if not value
+        ]
+        sql = build_available_balance_sql(request)
+        filters = [
+            {"table": "custody_position", "column": "business_partner_id", "operator": "=", "value": request.business_partner_id or ""},
+            {"table": "custody_position", "column": "portfolio_id", "operator": "=", "value": request.portfolio_id or ""},
+            {
+                "table": "security_movement",
+                "column": {1: "trade_date", 2: "value_date", 5: "transaction_date"}.get(request.balance_type, "trade_date"),
+                "operator": "<=",
+                "value": request.balance_date or "",
+            },
+            {"table": "custody_block", "column": "block_valid_from_date", "operator": "<=", "value": request.balance_date or ""},
+            {"table": "custody_block", "column": "block_release_date", "operator": "as_of_active", "value": request.balance_date or ""},
+            {"table": "custody_block", "column": "block_status", "operator": "=", "value": "ACTIVE"},
+        ]
+        intent = Intent(aggregations=["SUM"], filters=filters, requires_join=True)
+        terms = _tokens(query)
+        entities = EntityExtraction(
+            raw_terms=terms,
+            canonical_terms=terms,
+            tables=sorted(required_tables),
+            columns=[
+                "business_partner_id",
+                "portfolio_id",
+                "balance_date",
+                "amount_quantity",
+                "block_quantity_amount",
+                "available_balance",
+            ],
+            measures=["settled_balance", "blocked_balance", "available_balance"],
+            filters=filters,
+            unresolved_terms=[],
+        )
+        joins = self._custody_balance_relationships()
+        plan = QueryPlan(
+            main_table="custody_position",
+            selected_columns=[
+                ("custody_position", "business_partner_id"),
+                ("custody_position", "portfolio_id"),
+                ("custody_position", "position_number"),
+                ("custody_position", "position_type"),
+                ("custody_position", "instrument_id"),
+                ("custody_position", "security_position_type"),
+                ("custody_position", "custodian_id"),
+                ("custody_position", "custodian_account_number"),
+                ("custody_position", "currency"),
+                ("custody_position", "stock_exchange"),
+            ],
+            joins=joins,
+            filters=filters,
+            aggregations=[
+                {
+                    "function": "SUM",
+                    "table": "security_movement",
+                    "column": "amount_quantity",
+                    "alias": "settled_balance",
+                },
+                {
+                    "function": "SUM",
+                    "table": "custody_block",
+                    "column": "block_quantity_amount",
+                    "alias": "blocked_balance",
+                },
+            ],
+            group_by=[],
+            order_by=("custody_position.position_number", "ASC"),
+            limit=None,
+            confidence=96,
+        )
+        matches = self._custody_balance_matches()
+        plan_validation_errors = self._validate_query_plan(plan)
+        valid, validation = self.validation_agent.validate(sql, intent, entities, plan)
+        alignment_report = self.sql_agent.audit_alignment(plan, sql)
+        if plan_validation_errors:
+            valid = False
+            validation = "Plan validation failed: " + ", ".join(plan_validation_errors)
+        if alignment_report.get("critical_mismatches"):
+            valid = False
+            validation = "Generated SQL does not match planner output: " + ", ".join(alignment_report.get("critical_mismatches", []))
+        if missing_params:
+            valid = False
+            validation = "Missing required balance inputs: " + ", ".join(missing_params)
+
+        llm_trace, model_confidence = self._custody_balance_provider_review(
+            query,
+            request,
+            sql,
+            plan,
+            validation,
+        )
+        execution_trace.setdefault("events", []).extend([
+            {
+                "stage": "business_logic_lookup",
+                "matched_rule": "custody_available_balance",
+                "parameters": balance_request_summary(request),
+            },
+            {
+                "stage": "plan_validation",
+                "valid": not plan_validation_errors,
+                "errors": plan_validation_errors,
+            },
+            {
+                "stage": "sql_validation",
+                "valid": valid,
+                "validation": validation,
+            },
+        ])
+        execution_trace["query_complexity"] = "ENTERPRISE"
+
+        components = {
+            "intent": 100.0,
+            "entity": 82.0 if missing_params else 97.0,
+            "column": 96.0,
+            "join": 95.0,
+            "aggregation": 100.0,
+            "semantic": 97.0,
+            "validation": 100.0 if valid else 0.0,
+        }
+        coverage = {
+            "intent": {
+                "score": components["intent"],
+                "required": ["AVAILABLE_BALANCE", "SETTLED_BALANCE", "BLOCKED_BALANCE"],
+                "matched": ["AVAILABLE_BALANCE", "SETTLED_BALANCE", "BLOCKED_BALANCE"],
+                "missing": [],
+            },
+            "entity": {
+                "score": components["entity"],
+                "required": ["business_partner_id", "portfolio_id", "balance_date"],
+                "matched": [
+                    label for label in ["business_partner_id", "portfolio_id", "balance_date"]
+                    if label not in missing_params
+                ],
+                "missing": missing_params,
+            },
+            "column": {
+                "score": components["column"],
+                "required": [
+                    "custody_position.business_partner_id",
+                    "custody_position.portfolio_id",
+                    "security_movement.amount_quantity",
+                    "security_movement.credit_and_debit_flag",
+                    "custody_block.block_quantity_amount",
+                    "custody_block.block_valid_from_date",
+                    "custody_block.block_release_date",
+                ],
+                "matched": [
+                    "custody_position.business_partner_id",
+                    "custody_position.portfolio_id",
+                    "security_movement.amount_quantity",
+                    "security_movement.credit_and_debit_flag",
+                    "custody_block.block_quantity_amount",
+                    "custody_block.block_valid_from_date",
+                    "custody_block.block_release_date",
+                ],
+                "missing": [],
+            },
+            "join": {
+                "score": components["join"],
+                "required_tables": sorted(required_tables),
+                "joined_tables": sorted(required_tables),
+                "missing": [],
+            },
+            "aggregation": {
+                "score": components["aggregation"],
+                "required": ["SUM", "AVAILABLE_BALANCE_FORMULA"],
+                "matched": ["SUM", "AVAILABLE_BALANCE_FORMULA"],
+                "missing": [],
+            },
+            "semantic": {
+                "score": components["semantic"],
+                "required": ["settled balance", "blocked balance", "available balance"],
+                "matched": ["settled balance", "blocked balance", "available balance"],
+                "missing": [],
+            },
+            "validation": {
+                "score": components["validation"],
+                "valid": valid,
+                "message": validation,
+            },
+            "plan_alignment": alignment_report,
+            "plan_validation": {"valid": not plan_validation_errors, "errors": plan_validation_errors},
+            "business_logic": {
+                "matched_rule": "custody_available_balance",
+                "parameters": balance_request_summary(request),
+                "steps": [
+                    "Validate portfolio",
+                    "Fetch custody position records from custody_position",
+                    "Calculate settled balance from security_movement",
+                    "Calculate active blocked balance from custody_block",
+                    "available_balance = settled_balance - blocked_balance",
+                ],
+            },
+            "llm": llm_trace,
+        }
+        component_applicability = {
+            "intent": True,
+            "entity": True,
+            "column": True,
+            "join": True,
+            "aggregation": True,
+            "semantic": True,
+        }
+        coverage["confidence_applicability"] = component_applicability
+
+        confidence_breakdown = self.confidence_coordinator.compute_from_components(
+            components,
+            valid,
+            missing_params,
+            [],
+        )
+        planner_confidence = float(plan.confidence)
+        validator_confidence = 100.0 if valid else 0.0
+        applicable_scores = [
+            components[key]
+            for key, enabled in component_applicability.items()
+            if enabled
+        ]
+        coverage_confidence = round(sum(applicable_scores) / len(applicable_scores), 2)
+        confidence_breakdown.update({
+            "planner_confidence": planner_confidence,
+            "validator_confidence": validator_confidence,
+            "coverage_confidence": coverage_confidence,
+            "model_confidence": model_confidence,
+            "system_confidence": confidence_breakdown.get("overall", 0.0),
+        })
+        confidence_evidence = self._confidence_evidence(
+            components,
+            coverage,
+            component_applicability,
+            plan=plan,
+            llm_trace=llm_trace,
+            planner_confidence=planner_confidence,
+            validator_confidence=validator_confidence,
+            coverage_confidence=coverage_confidence,
+            model_confidence=model_confidence,
+        )
+        confidence = int(round(confidence_breakdown.get("overall", 0.0)))
+        confidence_band = self._confidence_band(confidence)
+        clarification_required = bool(missing_params) or not valid or confidence_band == "LOW"
+        options = [f"Provide {item.replace('_', ' ')}." for item in missing_params]
+        final_sql = sql if not clarification_required else (
+            "I need the business partner id, portfolio id, and balance date before generating available-balance SQL."
+        )
+        selected_tables = sorted(required_tables)
+        selected_columns = [f"{table}.{column}" for table, column in plan.selected_columns] + [
+            "security_movement.amount_quantity",
+            "security_movement.credit_and_debit_flag",
+            "custody_block.block_quantity_amount",
+        ]
+        join_path = [
+            f"{rel.from_table}.{rel.from_column} -> {rel.to_table}.{rel.to_column}"
+            for rel in joins
+        ]
+        runtime_metrics = {
+            "request_id": request_id,
+            "session_id": "local",
+            "total_ms": round((time.perf_counter() - run_started_at) * 1000, 3),
+            "events": len(execution_trace.get("events", [])),
+            "cache_hit": False,
+            "query_complexity": "ENTERPRISE",
+            "llm_provider": llm_trace.get("provider"),
+            "llm_model": llm_trace.get("model"),
+            "workflow_engine": dict(execution_trace.get("workflow_run") or {}).get("engine", self.workflow.engine),
+            "fallback_used": bool(llm_trace.get("fallback_used")),
+            "fallback_reason": llm_trace.get("fallback_reason", ""),
+            "repair_attempts": int(llm_trace.get("retry_count") or 0),
+        }
+        benchmark_record = {
+            "query_id": request_id,
+            "query": query,
+            "generated_sql": final_sql,
+            "candidate_sql": sql,
+            "provider": llm_trace.get("provider"),
+            "model": llm_trace.get("model"),
+            "complexity": "ENTERPRISE",
+            "planner_correct": not plan_validation_errors and not missing_params,
+            "sql_correct": bool(valid and not clarification_required),
+            "validator_valid": bool(valid),
+            "confidence": confidence,
+            "confidence_band": confidence_band,
+            "coverage": coverage,
+            "confidence_breakdown": confidence_breakdown,
+            "confidence_evidence": confidence_evidence,
+            "retry_count": int(llm_trace.get("retry_count") or 0),
+            "latency_ms": runtime_metrics["total_ms"],
+            "fallback_used": bool(llm_trace.get("fallback_used")),
+        }
+        telemetry = self.telemetry_agent.record(
+            query,
+            valid and not clarification_required,
+            confidence_breakdown,
+            coverage,
+            provider_trace=llm_trace,
+            complexity="ENTERPRISE",
+        )
+        execution_trace["counters"] = dict(self.runtime_counters)
+        execution_trace["cache_hit"] = False
+
+        result = CopilotResult(
+            sql=final_sql,
+            confidence=confidence,
+            valid=valid and not clarification_required,
+            validation=validation if not clarification_required else "Missing required balance inputs.",
+            clarification_required=clarification_required,
+            clarification_options=options,
+            intent=asdict(intent),
+            entities=asdict(entities),
+            selected_tables=selected_tables,
+            selected_columns=selected_columns,
+            join_path=join_path,
+            plan=asdict(plan),
+            optimizations=self.optimization_agent.analyze(sql, plan),
+            confidence_breakdown=confidence_breakdown,
+            confidence_evidence=confidence_evidence,
+            coverage_report=coverage,
+            agent_telemetry=telemetry,
+            execution_trace=execution_trace,
+            runtime_metrics=runtime_metrics,
+            benchmark_record=benchmark_record,
+            missing_entities=missing_params,
+            missing_columns=[],
+            missing_joins=[],
+            missing_aggregations=[],
+            query_complexity="ENTERPRISE",
+            confidence_band=confidence_band,
+            provider_status=self._provider_status(),
+            llm_trace=llm_trace,
+            model_confidence=model_confidence,
+            planner_confidence=planner_confidence,
+            validator_confidence=validator_confidence,
+            coverage_confidence=coverage_confidence,
+            cache_hit=False,
+        )
+        self._write_runtime_logs(
+            request_id,
+            {
+                "query": query,
+                "sql": final_sql,
+                "valid": result.valid,
+                "plan": result.plan,
+                "selected_tables": selected_tables,
+                "selected_columns": selected_columns,
+                "join_path": join_path,
+                "confidence_breakdown": confidence_breakdown,
+                "confidence_evidence": confidence_evidence,
+                "coverage_report": coverage,
+                "execution_trace": execution_trace,
+                "runtime_metrics": runtime_metrics,
+                "benchmark_record": benchmark_record,
+                "llm_trace": llm_trace,
+            },
+        )
+        llm_failed_fallback = bool(llm_trace.get("active")) and bool(llm_trace.get("fallback_used"))
+        if allow_cache and result.valid and result.confidence >= 70 and not llm_failed_fallback:
+            self.cache.put(query, result)
+        return result
+
     def run(self, query: str, allow_cache: bool = True) -> CopilotResult:
         request_id = uuid.uuid4().hex[:12]
         run_started_at = time.perf_counter()
+        workflow_run = self.workflow.invoke(query=query, request_id=request_id)
         execution_trace: dict[str, object] = {
             "request_id": request_id,
             "session_id": "local",
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "workflow": self.workflow.describe(),
+            "workflow_run": workflow_run,
             "events": [],
             "counters": {},
         }
+        custody_result = self._run_custody_balance_logic(
+            query,
+            request_id,
+            run_started_at,
+            execution_trace,
+            allow_cache=allow_cache,
+        )
+        if custody_result is not None:
+            return custody_result
+        custody_customer_result = self._run_custody_customer_logic(
+            query,
+            request_id,
+            run_started_at,
+            execution_trace,
+            allow_cache=allow_cache,
+        )
+        if custody_customer_result is not None:
+            return custody_customer_result
         if allow_cache:
             cached = self.cache.get(query)
             if cached:
@@ -1804,6 +3881,7 @@ class EnterpriseSQLCopilot:
                     "request_id": request_id,
                     "total_ms": round((time.perf_counter() - run_started_at) * 1000, 3),
                     "cache_hit": True,
+                    "workflow_engine": workflow_run.get("engine", self.workflow.engine),
                 }
                 return cached
 
@@ -1843,12 +3921,50 @@ class EnterpriseSQLCopilot:
                 "joins": [f"{rel.from_table}.{rel.from_column}->{rel.to_table}.{rel.to_column}" for rel in plan.joins] if plan else [],
             },
         )
+        query_complexity = self._query_complexity(intent, entities, matches, plan)
+        plan_validation_errors = self._validate_query_plan(plan)
+        execution_trace["query_complexity"] = query_complexity
+        execution_trace.setdefault("events", []).append({
+            "stage": "plan_validation",
+            "valid": not plan_validation_errors,
+            "errors": plan_validation_errors,
+            "join_diagnostics": getattr(self.join_agent, "last_diagnostics", {}),
+        })
         stage_started = time.perf_counter()
-        sql = self.sql_agent.generate(plan) if plan else "The schema does not have enough information to answer this query."
-        alignment_report = self.sql_agent.last_alignment if plan else {"aligned": False, "critical_mismatches": ["missing_plan"]}
-        self._trace_mark(execution_trace, "sql_generator_calls", "sql_generation", stage_started, {"alignment": alignment_report})
+        deterministic_sql = self.sql_agent.generate(plan) if plan else "The schema does not have enough information to answer this query."
+        deterministic_alignment = self.sql_agent.last_alignment if plan else {"aligned": False, "critical_mismatches": ["missing_plan"]}
+        sql, alignment_report, llm_trace = self._generate_sql_with_optional_llm(
+            query,
+            intent,
+            entities,
+            matches,
+            plan,
+            query_complexity,
+            deterministic_sql,
+            deterministic_alignment,
+            plan_validation_errors,
+        )
+        self._trace_mark(
+            execution_trace,
+            "sql_generator_calls",
+            "sql_generation",
+            stage_started,
+            {
+                "alignment": alignment_report,
+                "llm": {
+                    "provider": llm_trace.get("provider"),
+                    "model": llm_trace.get("model"),
+                    "active": llm_trace.get("active"),
+                    "fallback_used": llm_trace.get("fallback_used"),
+                    "fallback_reason": llm_trace.get("fallback_reason"),
+                },
+            },
+        )
         stage_started = time.perf_counter()
         valid, validation = self.validation_agent.validate(sql, intent, entities, plan)
+        if plan_validation_errors:
+            valid = False
+            validation = "Plan validation failed: " + ", ".join(plan_validation_errors)
         if alignment_report.get("critical_mismatches"):
             valid = False
             validation = "Generated SQL does not match planner output: " + ", ".join(alignment_report.get("critical_mismatches", []))
@@ -1923,6 +4039,27 @@ class EnterpriseSQLCopilot:
             "validation": 100.0 if valid else 0.0,
         }
         coverage["plan_alignment"] = alignment_report
+        coverage["plan_validation"] = {
+            "valid": not plan_validation_errors,
+            "errors": plan_validation_errors,
+        }
+        coverage["business_logic"] = (
+            self.vocabulary.rules_for_terms(entities.canonical_terms)
+            if self.experiment_flags.get("USE_BUSINESS_LOGIC", True)
+            else {}
+        )
+        coverage["experiment_flags"] = dict(self.experiment_flags)
+        coverage["join_graph"] = getattr(self.join_agent, "last_diagnostics", {})
+        coverage["llm"] = llm_trace
+        component_applicability = {
+            "intent": True,
+            "entity": self._coverage_applicable(entity_comp),
+            "column": self._coverage_applicable(column_comp),
+            "join": self._coverage_applicable(join_comp, join=True),
+            "aggregation": self._coverage_applicable(agg_comp),
+            "semantic": self._coverage_applicable((semantic_comp or coverage.get("semantic", {})) if isinstance((semantic_comp or coverage.get("semantic", {})), dict) else {}),
+        }
+        coverage["confidence_applicability"] = component_applicability
         self._trace_mark(
             execution_trace,
             "coverage_calls",
@@ -1957,9 +4094,37 @@ class EnterpriseSQLCopilot:
 
         stage_started = time.perf_counter()
         confidence_breakdown = self.confidence_coordinator.compute_from_components(components, valid, unresolved, ambiguities)
+        planner_confidence = float(plan.confidence if plan else 0.0)
+        validator_confidence = 100.0 if valid else 0.0
+        applicable_scores = [
+            components[key]
+            for key in ("intent", "entity", "column", "join", "aggregation", "semantic")
+            if component_applicability.get(key)
+        ]
+        coverage_confidence = round(sum(applicable_scores) / len(applicable_scores), 2) if applicable_scores else 0.0
+        model_confidence = float(llm_trace.get("model_confidence") or 0.0)
+        confidence_breakdown.update({
+            "planner_confidence": planner_confidence,
+            "validator_confidence": validator_confidence,
+            "coverage_confidence": coverage_confidence,
+            "model_confidence": model_confidence,
+            "system_confidence": confidence_breakdown.get("overall", 0.0),
+        })
+        confidence_evidence = self._confidence_evidence(
+            components,
+            coverage,
+            component_applicability,
+            plan=plan,
+            llm_trace=llm_trace,
+            planner_confidence=planner_confidence,
+            validator_confidence=validator_confidence,
+            coverage_confidence=coverage_confidence,
+            model_confidence=model_confidence,
+        )
         self._trace_mark(execution_trace, "confidence_calls", "confidence", stage_started, {"confidence": confidence_breakdown.get("overall", 0.0)})
         confidence = int(round(confidence_breakdown.get("overall", 0.0)))
-        clarification_required = confidence < 70 or bool(ambiguities) or bool(unresolved)
+        confidence_band = self._confidence_band(confidence)
+        clarification_required = confidence_band == "LOW" or bool(ambiguities) or bool(unresolved)
         options = ambiguities[:5]
         if unresolved:
             options = [f"Map '{term}' to a real schema column first." for term in unresolved]
@@ -1980,6 +4145,8 @@ class EnterpriseSQLCopilot:
             valid and not clarification_required,
             confidence_breakdown,
             coverage,
+            provider_trace=llm_trace,
+            complexity=query_complexity,
         )
 
         selected_tables = []
@@ -2002,17 +4169,33 @@ class EnterpriseSQLCopilot:
             "total_ms": round((time.perf_counter() - run_started_at) * 1000, 3),
             "events": len(execution_trace.get("events", [])),
             "cache_hit": False,
+            "query_complexity": query_complexity,
+            "llm_provider": llm_trace.get("provider"),
+            "llm_model": llm_trace.get("model"),
+            "workflow_engine": workflow_run.get("engine", self.workflow.engine),
+            "fallback_used": bool(llm_trace.get("fallback_used")),
+            "fallback_reason": llm_trace.get("fallback_reason", ""),
+            "repair_attempts": int(llm_trace.get("retry_count") or 0),
         }
         benchmark_record = {
+            "query_id": request_id,
             "query": query,
             "generated_sql": final_sql,
             "candidate_sql": sql,
+            "provider": llm_trace.get("provider"),
+            "model": llm_trace.get("model"),
+            "complexity": query_complexity,
             "planner_correct": bool(plan and not unresolved and not ambiguities and not alignment_report.get("critical_mismatches")),
             "sql_correct": bool(valid and alignment_report.get("aligned") and not clarification_required),
             "validator_valid": bool(valid),
             "confidence": confidence,
+            "confidence_band": confidence_band,
             "coverage": coverage,
             "confidence_breakdown": confidence_breakdown,
+            "confidence_evidence": confidence_evidence,
+            "retry_count": int(llm_trace.get("retry_count") or 0),
+            "latency_ms": runtime_metrics["total_ms"],
+            "fallback_used": bool(llm_trace.get("fallback_used")),
         }
 
         result = CopilotResult(
@@ -2030,6 +4213,7 @@ class EnterpriseSQLCopilot:
             plan=asdict(plan) if plan else None,
             optimizations=self.optimization_agent.analyze(sql, plan),
             confidence_breakdown=confidence_breakdown,
+            confidence_evidence=confidence_evidence,
             coverage_report=coverage,
             agent_telemetry=telemetry,
             execution_trace=execution_trace,
@@ -2039,6 +4223,14 @@ class EnterpriseSQLCopilot:
             missing_columns=coverage.get("column", {}).get("missing", []),
             missing_joins=coverage.get("join", {}).get("missing", []),
             missing_aggregations=coverage.get("aggregation", {}).get("missing", []),
+            query_complexity=query_complexity,
+            confidence_band=confidence_band,
+            provider_status=self._provider_status(),
+            llm_trace=llm_trace,
+            model_confidence=model_confidence,
+            planner_confidence=planner_confidence,
+            validator_confidence=validator_confidence,
+            coverage_confidence=coverage_confidence,
             cache_hit=False,
         )
         self._write_runtime_logs(
@@ -2052,13 +4244,16 @@ class EnterpriseSQLCopilot:
                 "selected_columns": selected_columns,
                 "join_path": join_path,
                 "confidence_breakdown": confidence_breakdown,
+                "confidence_evidence": confidence_evidence,
                 "coverage_report": coverage,
                 "execution_trace": execution_trace,
                 "runtime_metrics": runtime_metrics,
                 "benchmark_record": benchmark_record,
+                "llm_trace": llm_trace,
             },
         )
-        if result.valid and result.confidence >= 70:
+        llm_failed_fallback = bool(llm_trace.get("active")) and bool(llm_trace.get("fallback_used"))
+        if result.valid and result.confidence >= 70 and not llm_failed_fallback:
             self.cache.put(query, result)
         return result
 

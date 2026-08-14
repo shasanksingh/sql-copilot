@@ -7,7 +7,7 @@ import { PageHeader } from "@/components/app-shell/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { getFeedback, getSchemaRequests, updateSchemaRequestStatus } from "@/features/api/client";
+import { applySchemaRequest, getFeedback, getSchemaRequests, updateSchemaRequestStatus } from "@/features/api/client";
 import { useAuth } from "@/features/auth/auth-provider";
 import { useToastStore } from "@/features/store/use-toast-store";
 import type { SchemaRequest } from "@/features/api/types";
@@ -28,6 +28,25 @@ export default function AdminSchemaRequestsPage() {
     onError: (error) => pushToast({
       title: "Status update failed",
       description: error instanceof Error ? error.message : "Unable to update request.",
+      variant: "error"
+    })
+  });
+  const applyMutation = useMutation({
+    mutationFn: applySchemaRequest,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["admin-schema-requests"] }),
+        queryClient.invalidateQueries({ queryKey: ["schema-requests"] }),
+        queryClient.invalidateQueries({ queryKey: ["schema-catalog"] }),
+        queryClient.invalidateQueries({ queryKey: ["metadata-status"] }),
+        queryClient.invalidateQueries({ queryKey: ["relationships"] }),
+        queryClient.invalidateQueries({ queryKey: ["metrics"] })
+      ]);
+      pushToast({ title: "Schema proposal applied", variant: "success" });
+    },
+    onError: (error) => pushToast({
+      title: "Apply failed",
+      description: error instanceof Error ? error.message : "Unable to apply proposal.",
       variant: "error"
     })
   });
@@ -69,6 +88,7 @@ export default function AdminSchemaRequestsPage() {
                 {item.attachment_name ? <div className="mt-3 flex items-center gap-2 text-xs text-indigo-200"><FileText className="h-4 w-4" />{item.attachment_name}</div> : null}
                 <div className="mt-4 flex flex-wrap gap-2">
                   <Button className="h-8 px-3 text-xs" onClick={() => mutation.mutate({ requestId: item.request_id, status: "approved" })}><CheckCircle2 className="h-3.5 w-3.5" />Approve</Button>
+                  <Button variant="outline" className="h-8 px-3 text-xs" onClick={() => applyMutation.mutate(item.request_id)} disabled={applyMutation.isPending}>Apply proposal</Button>
                   <Button variant="outline" className="h-8 px-3 text-xs" onClick={() => mutation.mutate({ requestId: item.request_id, status: "generated" })}>Mark generated</Button>
                   <Button variant="ghost" className="h-8 px-3 text-xs text-rose-200" onClick={() => mutation.mutate({ requestId: item.request_id, status: "rejected" })}><XCircle className="h-3.5 w-3.5" />Reject</Button>
                 </div>

@@ -1,0 +1,13 @@
+{
+  "folders": [
+    {
+      "name": "EnterpriseSQLCopilot",
+      "path": "D:\\Projects\\EnterpriseSQLCopilot"
+    }
+  ],
+  "settings": {
+    "python.defaultInterpreterPath": "D:\\Projects\\EnterpriseSQLCopilot\\.venv\\Scripts\\python.exe",
+    "terminal.integrated.cwd": "D:\\Projects\\EnterpriseSQLCopilot",
+    "npm.packageManager": "npm"
+  }
+}

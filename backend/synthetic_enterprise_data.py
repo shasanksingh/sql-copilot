@@ -351,6 +351,34 @@ class SchemaRequestRepository:
 
 class SchemaDesignAgent:
     def design(self, payload: dict[str, object]) -> dict[str, object]:
+        inferred = payload.get("inferred_schema")
+        if isinstance(inferred, dict) and isinstance(inferred.get("table"), dict):
+            table = inferred["table"]
+            columns = table.get("columns") if isinstance(table.get("columns"), list) else []
+            if columns:
+                return {
+                    "domain": str(table.get("domain") or "Uploaded Schema"),
+                    "module": str(table.get("name") or payload.get("table_name") or "uploaded_table"),
+                    "source_format": inferred.get("source_format"),
+                    "tables": [
+                        {
+                            "name": table.get("name") or payload.get("table_name") or "uploaded_table",
+                            "domain": table.get("domain") or "Uploaded Schema",
+                            "purpose": table.get("purpose") or payload.get("business_purpose") or "Inferred uploaded schema.",
+                            "columns": columns,
+                            "relationships": table.get("relationships") or [],
+                            "indexes": table.get("indexes") or [],
+                            "sample_rows": table.get("sample_rows") or [],
+                        }
+                    ],
+                    "relationships": table.get("relationships") or [],
+                    "indexes": table.get("indexes") or [],
+                    "ingestion": {
+                        "attachment_name": payload.get("attachment_name"),
+                        "request_kind": payload.get("request_kind"),
+                        "source_format": inferred.get("source_format"),
+                    },
+                }
         text = " ".join(str(value) for value in payload.values()).lower()
         domain = self._detect_domain(text)
         module = self._module_name(payload, domain)

@@ -25,7 +25,7 @@ The system can run without a remote LLM by using its deterministic agent pipelin
 | Explainability | Planner steps, validation coverage, confidence signals, join status, and optimization guidance remain inspectable. |
 | Deployment boundary | Local deterministic mode works without remote model credentials; production settings add secure auth and controlled origins. |
 
-For local startup, signup troubleshooting, and administrator access, use [docs/local_setup_and_admin.md](docs/local_setup_and_admin.md).
+For local startup, signup troubleshooting, and administrator access, use [docs/local_setup_and_admin.md](docs/local_setup_and_admin.md). For endpoint details, use [docs/api_reference.md](docs/api_reference.md). For NVIDIA GPT-OSS-20B setup and evaluation, see [docs/nvidia_gpt_oss_20b.md](docs/nvidia_gpt_oss_20b.md), [docs/enterprise_query_planning.md](docs/enterprise_query_planning.md), and [docs/confidence_and_evaluation.md](docs/confidence_and_evaluation.md).
 
 ## Architecture
 
@@ -51,8 +51,9 @@ The SQL path is:
 
 ```text
 authenticated request -> intent -> entities -> schema linking -> planner
-                      -> SQL generation -> read-only validation -> coverage
-                      -> confidence gate -> explainable API response
+                      -> query plan validation -> optional NVIDIA GPT-OSS-20B
+                      -> SQL validation and repair -> coverage
+                      -> confidence gate -> clarification or response
 ```
 
 ## Requirements
@@ -62,6 +63,19 @@ authenticated request -> intent -> entities -> schema linking -> planner
 - npm
 
 Remote LLM access is optional. Without remote credentials, the backend uses the local deterministic agent pipeline.
+
+## D-Drive Runtime Layout
+
+For machines where C: is low on space, prepare the D-drive layout before installing dependencies:
+
+```powershell
+.\scripts\prepare_d_drive.ps1 -CopyProject
+cd D:\Projects\EnterpriseSQLCopilot
+```
+
+The backend now derives generated runtime data from `SQL_COPILOT_PROJECT_ROOT`, `SQL_COPILOT_RUNTIME_DIR`, and `SQL_COPILOT_MODEL_DIR`. Use the included `.env.example` or `.vscode/launch.json` values to keep SQLite files, FAISS indexes, logs, temp files, pip/npm caches, HuggingFace caches, Torch caches, and optional model artifacts under `D:\Projects\EnterpriseSQLCopilot` or `D:\AIModels`.
+
+No local model is downloaded automatically. If a provider requires local inference, download confirmation and a `D:\AIModels` target should be handled before installing model files.
 
 ## Quick Start
 
@@ -82,7 +96,7 @@ npm install
 npm run dev
 ```
 
-Open `http://127.0.0.1:3000` and create an account at `/signup`.
+Open `http://127.0.0.1:4000` and create an account at `/signup`.
 
 To provision the first administrator, set these variables before starting the API:
 
@@ -100,22 +114,38 @@ The account is created only when the email does not already exist.
 | --- | --- | --- |
 | `NEXT_PUBLIC_API_BASE_URL` | `http://127.0.0.1:5000` | Frontend API base URL |
 | `APP_ENV` | `development` | Use `production` to enable production auth defaults |
-| `FRONTEND_ORIGIN` | `http://127.0.0.1:3000` | Exact credentialed CORS origin |
-| `AUTH_DB_PATH` | `backend/sql_copilot.db` | Users, sessions, resets, feedback, and logs |
+| `FRONTEND_ORIGIN` | `http://127.0.0.1:4000` | Exact credentialed CORS origin |
+| `AUTH_DB_PATH` | runtime SQLite `sql_copilot.db` | Users, sessions, resets, feedback, and logs |
 | `AUTH_JWT_SECRET` | generated and persisted locally | Managed JWT signing secret, at least 32 bytes |
 | `AUTH_COOKIE_SECURE` | enabled in production | Marks auth and CSRF cookies secure |
 | `AUTH_EXPOSE_RESET_TOKEN` | enabled outside production | Returns reset token for local development |
 | `BOOTSTRAP_ADMIN_NAME` | `SQL Copilot Admin` | Initial administrator display name |
 | `BOOTSTRAP_ADMIN_EMAIL` | empty | Initial administrator email |
 | `BOOTSTRAP_ADMIN_PASSWORD` | empty | Initial administrator password |
+| `SQL_COPILOT_PROJECT_ROOT` | repository root | Base root for relocatable project paths |
+| `SQL_COPILOT_RUNTIME_DIR` | `.runtime` under project root | Generated runtime files |
+| `SQL_COPILOT_CACHE_DIR` | runtime cache directory | FAISS, pip, npm, and process caches |
+| `SQL_COPILOT_SQLITE_DIR` | runtime SQLite directory | Local SQLite databases |
+| `SQL_COPILOT_LOG_DIR` | runtime logs directory | Agent, planner, benchmark, and API logs |
+| `SQL_COPILOT_TEMP_DIR` | runtime temp directory | Temporary files via `TEMP` and `TMP` |
+| `SQL_COPILOT_MODEL_DIR` | runtime model directory | Optional model/checkpoint root; use `D:\AIModels` on low-C systems |
 | `SCHEMA_REQUEST_DB_PATH` | same as `AUTH_DB_PATH` | Schema request queue database |
 | `SCHEMA_FILE` | `backend/data/RAG_DOC.xlsx` | Excel schema workbook |
-| `USE_REMOTE_LLM` | disabled | Enables configured remote embeddings and chat model |
-| `GENAI_BASE_URL` | provider URL | Remote OpenAI-compatible API base |
-| `GENAI_API_KEY` | empty | Remote API credential |
-| `AGENT_FEEDBACK_DB_PATH` | `backend/sql_agent_feedback.sqlite` | Agent feedback and telemetry |
+| `DYNAMIC_SCHEMA_FILE` | runtime `dynamic_schema.json` | Live Schema Studio overlay persisted outside the workbook |
+| `SQL_COPILOT_LLM_PROVIDER` | `nvidia` | `nvidia`, custom OpenAI-compatible `openai`, `ollama`, or `local` |
+| `SQL_COPILOT_REMOTE_LLM` | enabled | Enables remote/provider chat when credentials or Ollama endpoint exist |
+| `SQL_COPILOT_LLM_BASE_URL` | provider URL | OpenAI-compatible API base URL |
+| `SQL_COPILOT_CHAT_MODEL` | provider default | Chat model name |
+| `NVIDIA_API_KEY` | empty | NVIDIA provider key, server-side only |
+| `NVIDIA_MODEL` | `openai/gpt-oss-20b` | NVIDIA chat model |
+| `NVIDIA_BASE_URL` | `https://integrate.api.nvidia.com/v1` | NVIDIA OpenAI-compatible base URL |
+| `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY`, `LLM_API_BASE` | empty | Optional custom-provider aliases |
+| `LLM_TIMEOUT_SECONDS`, `LLM_MAX_RETRIES`, `LLM_TEMPERATURE`, `MAX_GENERATION_RETRIES` | provider defaults | Provider timeout, adapter retries, temperature, and SQL repair attempts |
+| `CONFIDENCE_LOW_THRESHOLD`, `CONFIDENCE_HIGH_THRESHOLD` | `75`, `90` | LOW/MEDIUM/HIGH confidence band thresholds |
+| `SQL_COPILOT_EMBEDDING_MODEL` | provider default | Embedding model name for supported providers |
+| `AGENT_FEEDBACK_DB_PATH` | runtime SQLite `sql_agent_feedback.sqlite` | Agent feedback and telemetry |
 | `RL_ENABLED` | `1` | Enables RL integration when dependencies exist |
-| `RL_MODEL_PATH` | `rl/models/sql_ppo_agent.zip` | PPO model location |
+| `RL_MODEL_PATH` | model root `rl/sql_ppo_agent.zip` | PPO model location |
 | `ENTERPRISE_SYNTHETIC_TABLES` | `180` | Virtual enterprise catalog size |
 | `PORT` | `5000` | Direct `backend/app.py` startup port |
 
@@ -160,9 +190,11 @@ Authenticated endpoints:
 | `GET` | `/schema/catalog` | Active workbook schema catalog |
 | `GET` | `/schema/relationships` | Active foreign-key relationships |
 | `GET` | `/schema/er` | Mermaid ER diagram |
+| `GET` | `/metadata/status` | Dynamic metadata refresh status and live tables |
 | `GET` | `/enterprise-schema` | Synthetic enterprise-scale catalog |
-| `POST` | `/schema-request` | Submit table, schema, business, CSV, or JSON request |
+| `POST` | `/schema-request` | Submit table, schema, business, CSV, Excel, JSON, SQL DDL, or Parquet request |
 | `GET` | `/schema-requests` | List the user's requests; admins see all |
+| `GET` | `/runtime/config` | Authenticated provider and runtime-path diagnostics |
 | `POST` | `/feedback` | Submit product feedback |
 | `POST` | `/logs/frontend` | Store structured frontend diagnostics |
 
@@ -171,6 +203,11 @@ Administrator endpoints:
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
 | `PATCH` | `/schema-request/<id>/status` | Approve, generate, reject, or reset a request |
+| `POST` | `/metadata/refresh` | Rebuild BM25/FAISS metadata and reset planner state |
+| `POST` | `/schema/studio/tables` | Create or upsert a dynamic live table |
+| `PATCH` | `/schema/studio/tables/<table>` | Edit a dynamic live table |
+| `DELETE` | `/schema/studio/tables/<table>` | Delete a dynamic live table |
+| `POST` | `/schema/studio/apply-request/<id>` | Apply a generated schema proposal without restart |
 | `GET` | `/feedback` | Review all feedback |
 
 The SQL validator accepts one read-only `SELECT` statement. It blocks write, DDL, execution, and privilege operations including `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `MERGE`, `EXEC`, `GRANT`, and `REVOKE`.
@@ -179,7 +216,7 @@ The SQL validator accepts one read-only `SELECT` statement. It blocks write, DDL
 
 The protected workspace includes:
 
-- Responsive SQL Copilot chat with stable bottom composer, suggestion strip, auto-scroll, and long-content wrapping
+- Responsive SQL Copilot chat with stable sticky composer, suggestion strip, auto-scroll, persistent history, search, export, delete, and highlighted SQL wrapping
 - Mixed query suggestions that keep the full cross-domain prompt set and prepend at most two context-aware prompts
 - Planner Accuracy, SQL Accuracy, Validator Precision, and Confidence Reliability dashboard KPIs
 - Live, 10-second dashboard refresh with Day, Week, Month, Quarter, and Year range-specific KPIs, activity, and trends
@@ -188,8 +225,9 @@ The protected workspace includes:
 - Original/optimized SQL comparison, execution plan, cost reduction, and index suggestions
 - Expandable explainability timeline and runtime trace
 - Explainable join status that distinguishes single-table plans, completed join plans, and clarification stops
-- Schema request and feedback portal with CSV/JSON uploads
-- Administrator request and feedback review
+- Schema request and feedback portal with CSV, Excel, JSON, SQL DDL, and Parquet inference
+- Live Schema Studio controls for admin apply, refresh, proposal promotion, and dynamic table deletion
+- Administrator request and feedback review with proposal apply action
 - Persistent desktop sidebar, mobile drawer, theme, and authenticated user controls
 
 The Query Execution page is a preview and export workflow. The backend intentionally does not expose arbitrary database execution.
@@ -253,3 +291,7 @@ An optional `foreign_keys` worksheet may define:
 - `to_column`
 
 When the foreign-key worksheet is absent, the backend attempts conservative relationship inference from schema descriptions.
+
+## Dynamic Metadata Engine
+
+Schema Studio writes approved live schema changes to `DYNAMIC_SCHEMA_FILE` under the runtime directory. Each create, update, delete, or proposal apply refreshes in-memory schema maps, table and column documents, BM25 retrieval, FAISS indexes when embeddings are enabled, the relationship graph, planner hints, and the local enterprise copilot instance. Excel-backed workbook tables are read-only; dynamic tables are an overlay and can be removed without changing `backend/data/RAG_DOC.xlsx`.

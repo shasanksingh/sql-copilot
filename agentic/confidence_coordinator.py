@@ -1,9 +1,11 @@
+import json
+import os
 from typing import Dict, List
 
 
 class ConfidenceCoordinator:
     # weights aligned with requested spec
-    WEIGHTS = {
+    DEFAULT_WEIGHTS = {
         "intent": 0.25,
         "entity": 0.20,
         "column": 0.15,
@@ -13,11 +15,28 @@ class ConfidenceCoordinator:
         "validation": 0.05,
     }
 
+    def __init__(self, weights: Dict[str, float] | None = None) -> None:
+        configured = dict(weights or self.DEFAULT_WEIGHTS)
+        raw = os.getenv("CONFIDENCE_WEIGHTS_JSON", "").strip()
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    configured.update({
+                        str(key): float(value)
+                        for key, value in parsed.items()
+                        if str(key) in self.DEFAULT_WEIGHTS
+                    })
+            except (TypeError, ValueError, json.JSONDecodeError):
+                configured = dict(weights or self.DEFAULT_WEIGHTS)
+        total = sum(configured.values()) or 1.0
+        self.weights = {key: value / total for key, value in configured.items()}
+
     def compute_from_components(self, components: Dict[str, float], valid: bool, unresolved: List[str], ambiguities: List[str]) -> Dict[str, float]:
         # components expected to contain keys: intent, entity, column, join, aggregation, semantic, validation
-        comp = {k: float(components.get(k, 100.0)) for k in self.WEIGHTS.keys()}
+        comp = {k: float(components.get(k, 100.0)) for k in self.weights.keys()}
         total = 0.0
-        for k, w in self.WEIGHTS.items():
+        for k, w in self.weights.items():
             total += comp.get(k, 0.0) * w
 
         # penalties
@@ -35,6 +54,12 @@ class ConfidenceCoordinator:
         join_score = comp.get("join", 100.0)
         if join_score < 50.0:
             total -= (50.0 - join_score) * 0.25
+        entity_score = comp.get("entity", 100.0)
+        if entity_score < 70.0:
+            total -= (70.0 - entity_score) * 0.35
+        semantic_score = comp.get("semantic", 100.0)
+        if semantic_score < 70.0:
+            total -= (70.0 - semantic_score) * 0.5
 
         # penalties for missing display columns
         missing_display = int(components.get("missing_display_count", 0))

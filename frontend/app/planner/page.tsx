@@ -8,38 +8,59 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useCopilotStore } from "@/features/store/use-copilot-store";
 import { Badge } from "@/components/ui/badge";
 
-const steps = [
-  { id: "intent", label: "Intent", key: "intent" },
-  { id: "entities", label: "Entities", key: "entity" },
-  { id: "tables", label: "Tables", key: "column" },
-  { id: "joins", label: "Joins", key: "join" },
-  { id: "aggregations", label: "Aggregations", key: "aggregation" },
-  { id: "sql", label: "SQL", key: "validation" }
-] as const;
-
 export default function PlannerPage() {
   const response = useCopilotStore((state) => state.activeResponse);
-  const nodes = useMemo<Node[]>(() => steps.map((step, index) => {
-    const score = response?.insights.confidence_breakdown?.[step.key] ?? 0;
-    const detail = step.id === "intent"
-      ? response?.insights.query_type ?? "Waiting"
-      : step.id === "tables"
-        ? (response?.insights.selected_tables ?? []).join(", ") || "No tables"
-        : step.id === "joins"
-          ? `${response?.insights.join_path?.length ?? 0} edges`
-          : step.id === "sql"
-            ? response?.insights.valid ? "Validated" : "Not validated"
-            : `${Math.round(score)}% coverage`;
+  const plannerSteps = useMemo(() => {
+    const insights = response?.insights;
+    const selectedTables = insights?.selected_tables ?? [];
+    const joinPath = insights?.join_path ?? [];
+    const joinSteps = joinPath.length > 4
+      ? joinPath.map((join, index) => ({
+          id: `join-${index}`,
+          label: `Join ${index + 1}`,
+          key: "join",
+          detail: join
+        }))
+      : [{
+          id: "joins",
+          label: "Join Graph",
+          key: "join",
+          detail: `${joinPath.length} edge${joinPath.length === 1 ? "" : "s"}`
+        }];
+    return [
+      { id: "intent", label: "Intent", key: "intent", detail: insights?.query_type ?? "Waiting" },
+      { id: "entities", label: "Entities", key: "entity", detail: `${(insights?.entities?.["canonical_terms"] as string[] | undefined)?.length ?? 0} terms` },
+      { id: "business", label: "Business Rules", key: "semantic", detail: `${(insights?.entities?.["measures"] as string[] | undefined)?.length ?? 0} measures` },
+      { id: "tables", label: "Tables", key: "column", detail: selectedTables.join(", ") || "No tables" },
+      ...joinSteps,
+      { id: "aggregations", label: "Aggregations", key: "aggregation", detail: `${(insights?.plan?.["aggregations"] as unknown[] | undefined)?.length ?? 0} planned` },
+      { id: "filters", label: "Filters", key: "semantic", detail: `${(insights?.plan?.["filters"] as unknown[] | undefined)?.length ?? 0} planned` },
+      { id: "plan", label: "Query Plan", key: "planner_confidence", detail: insights?.query_complexity ?? "SIMPLE" },
+      { id: "sql", label: "SQL", key: "validation", detail: insights?.valid ? "Validated" : "Not validated" },
+      { id: "confidence", label: "Confidence", key: "system_confidence", detail: insights?.confidence_band ?? "LOW" }
+    ];
+  }, [response]);
+  const nodes = useMemo<Node[]>(() => plannerSteps.map((step, index) => {
+    const evidence = response?.insights.confidence_evidence?.find((item) => item.key === step.key);
+    const score = typeof evidence?.score === "number"
+      ? evidence.score
+      : response?.insights.confidence_breakdown?.[step.key] ?? 0;
+    const applicable = evidence?.applicable ?? Boolean(response);
+    const columns = Math.min(5, Math.max(1, Math.ceil(Math.sqrt(plannerSteps.length))));
+    const column = index % columns;
+    const row = Math.floor(index / columns);
     return {
       id: step.id,
-      position: { x: index * 230, y: index % 2 === 0 ? 70 : 220 },
+      position: { x: column * 250, y: row * 160 + 60 },
       data: {
         label: (
           <div className="min-w-36">
             <div className="text-xs uppercase tracking-wide text-slate-500">{index + 1}. Stage</div>
             <div className="mt-1 font-semibold text-white">{step.label}</div>
-            <div className="mt-2 max-w-40 truncate text-xs text-slate-400">{detail}</div>
-            <Badge tone={score >= 70 ? "emerald" : score > 0 ? "amber" : "slate"} className="mt-2">{Math.round(score)}%</Badge>
+            <div className="mt-2 max-w-44 truncate text-xs text-slate-400">{step.detail}</div>
+            <Badge tone={!applicable ? "slate" : score >= 70 ? "emerald" : score > 0 ? "amber" : "slate"} className="mt-2">
+              {!applicable ? "N/A" : `${Math.round(score)}%`}
+            </Badge>
           </div>
         )
       },
@@ -51,21 +72,21 @@ export default function PlannerPage() {
         color: "white"
       }
     };
-  }), [response]);
-  const edges = useMemo<Edge[]>(() => steps.slice(0, -1).map((step, index) => ({
-    id: `${step.id}-${steps[index + 1].id}`,
+  }), [plannerSteps, response]);
+  const edges = useMemo<Edge[]>(() => plannerSteps.slice(0, -1).map((step, index) => ({
+    id: `${step.id}-${plannerSteps[index + 1].id}`,
     source: step.id,
-    target: steps[index + 1].id,
+    target: plannerSteps[index + 1].id,
     animated: Boolean(response),
     markerEnd: { type: MarkerType.ArrowClosed, color: "#22d3ee" },
     style: { stroke: "#22d3ee" }
-  })), [response]);
+  })), [plannerSteps, response]);
 
   return (
     <AppShell>
       <PageHeader title="Query Planner" description="Visual representation of table selection, joins, filters, aggregations, and final plan confidence." />
       <Card className="overflow-hidden">
-        <CardContent className="h-[500px] p-0">
+        <CardContent className="h-[620px] p-0">
           <ReactFlow nodes={nodes} edges={edges} fitView minZoom={0.35} maxZoom={1.4} nodesDraggable>
             <Background color="rgba(148,163,184,.18)" gap={22} />
             <MiniMap pannable zoomable />
