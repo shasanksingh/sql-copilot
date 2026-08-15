@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" role="img" aria-labelledby="title desc">
+  <title id="title">SQL Copilot 3D hero</title>
+  <desc id="desc">A SQL Copilot visual with 3D-style icon tiles for natural language, planning, schema graph, NVIDIA assist, validation, and SQL output.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#06111f"/>
+      <stop offset=".48" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#101827"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#a5f3fc"/>
+      <stop offset=".55" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+    <linearGradient id="emerald" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#bbf7d0"/>
+      <stop offset=".6" stop-color="#34d399"/>
+      <stop offset="1" stop-color="#047857"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#fde68a"/>
+      <stop offset=".62" stop-color="#f59e0b"/>
+      <stop offset="1" stop-color="#be123c"/>
+    </linearGradient>
+    <linearGradient id="indigo" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#c4b5fd"/>
+      <stop offset=".58" stop-color="#818cf8"/>
+      <stop offset="1" stop-color="#4338ca"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="22" stdDeviation="22" flood-color="#020617" flood-opacity=".42"/>
+    </filter>
+    <filter id="tileShadow" x="-30%" y="-20%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="12" stdDeviation="10" flood-color="#020617" flood-opacity=".38"/>
+    </filter>
+    <style>
+      .h1 { fill: #f8fafc; font: 800 46px Inter, Segoe UI, Arial, sans-serif; }
+      .sub { fill: #cbd5e1; font: 500 17px Inter, Segoe UI, Arial, sans-serif; }
+      .label { fill: #f8fafc; font: 700 16px Inter, Segoe UI, Arial, sans-serif; }
+      .small { fill: #94a3b8; font: 600 12px Inter, Segoe UI, Arial, sans-serif; }
+      .code { fill: #dbeafe; font: 600 13px Consolas, Menlo, monospace; }
+      .line { stroke: #67e8f9; stroke-width: 3; stroke-linecap: round; opacity: .72; }
+    </style>
+  </defs>
+  <rect width="1200" height="560" rx="30" fill="url(#bg)"/>
+  <circle cx="148" cy="96" r="145" fill="#22d3ee" opacity=".08"/>
+  <circle cx="1010" cy="438" r="190" fill="#4f46e5" opacity=".12"/>
+  <circle cx="642" cy="78" r="90" fill="#10b981" opacity=".07"/>
+
+  <g transform="translate(64 70)">
+    <text class="h1" x="0" y="0">SQL Copilot</text>
+    <text class="sub" x="2" y="36">Schema-grounded text-to-SQL with planner-first governance.</text>
+    <text class="sub" x="2" y="64">Ask naturally. Inspect the plan. Return only validated read-only SQL.</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="72" y="184" width="326" height="252" rx="18" fill="rgba(15,23,42,.88)" stroke="rgba(255,255,255,.14)"/>
+    <text x="100" y="226" class="label">Business question</text>
+    <rect x="100" y="254" width="252" height="42" rx="9" fill="rgba(255,255,255,.08)" stroke="rgba(255,255,255,.12)"/>
+    <text x="118" y="280" class="small">Monthly paid revenue by tier</text>
+    <rect x="100" y="318" width="252" height="86" rx="9" fill="#020617" stroke="rgba(103,232,249,.22)"/>
+    <text x="118" y="346" class="code">SELECT month, tier,</text>
+    <text x="118" y="372" class="code">       SUM(amount)</text>
+    <text x="118" y="398" class="code">FROM validated_plan;</text>
+  </g>
+
+  <g filter="url(#tileShadow)">
+    <g transform="translate(480 164)">
+      <path d="M16 20h110l18 16v104l-18 18H16L0 140V36z" fill="#0f172a" stroke="rgba(255,255,255,.18)"/>
+      <path d="M0 36 16 20h110l18 16H34L16 54z" fill="url(#cyan)"/>
+      <path d="M34 54h110v86l-18 18H16V54z" fill="rgba(34,211,238,.15)"/>
+      <circle cx="72" cy="82" r="24" fill="url(#cyan)"/>
+      <path d="M58 82h28M72 68v28" stroke="#0f172a" stroke-width="6" stroke-linecap="round"/>
+      <text x="22" y="130" class="label">Intent</text>
+    </g>
+    <g transform="translate(650 164)">
+      <path d="M16 20h110l18 16v104l-18 18H16L0 140V36z" fill="#0f172a" stroke="rgba(255,255,255,.18)"/>
+      <path d="M0 36 16 20h110l18 16H34L16 54z" fill="url(#indigo)"/>
+      <path d="M34 54h110v86l-18 18H16V54z" fill="rgba(129,140,248,.16)"/>
+      <rect x="46" y="62" width="52" height="52" rx="10" fill="url(#indigo)"/>
+      <path d="M60 79h24M60 94h32" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+      <text x="22" y="130" class="label">Planner</text>
+    </g>
+    <g transform="translate(820 164)">
+      <path d="M16 20h110l18 16v104l-18 18H16L0 140V36z" fill="#0f172a" stroke="rgba(255,255,255,.18)"/>
+      <path d="M0 36 16 20h110l18 16H34L16 54z" fill="url(#emerald)"/>
+      <path d="M34 54h110v86l-18 18H16V54z" fill="rgba(52,211,153,.15)"/>
+      <circle cx="54" cy="79" r="10" fill="#bbf7d0"/>
+      <circle cx="92" cy="68" r="10" fill="#6ee7b7"/>
+      <circle cx="96" cy="104" r="10" fill="#34d399"/>
+      <path d="M62 76l22-6M61 84l27 17" stroke="#ecfdf5" stroke-width="4" stroke-linecap="round"/>
+      <text x="22" y="130" class="label">Schema</text>
+    </g>
+  </g>
+
+  <path class="line" d="M410 316 C448 316 442 244 480 244"/>
+  <path class="line" d="M624 244 H650"/>
+  <path class="line" d="M794 244 H820"/>
+
+  <g filter="url(#shadow)">
+    <rect x="502" y="386" width="566" height="96" rx="18" fill="rgba(255,255,255,.075)" stroke="rgba(103,232,249,.18)"/>
+    <g transform="translate(532 408)">
+      <rect width="54" height="54" rx="12" fill="url(#amber)"/>
+      <path d="M17 28h20M28 17v20" stroke="#422006" stroke-width="5" stroke-linecap="round"/>
+    </g>
+    <text x="610" y="430" class="label">Optional NVIDIA assist, deterministic validator, confidence gate</text>
+    <text x="610" y="458" class="small">Provider output can improve candidates, but schema alignment and read-only SQL validation remain authoritative.</text>
+  </g>
+</svg>

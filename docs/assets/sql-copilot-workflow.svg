@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
+  <title id="title">SQL Copilot workflow</title>
+  <desc id="desc">A 3D-style workflow diagram showing prompt, retrieval, planner, NVIDIA assist, validation, confidence, and answer stages.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="1" stop-color="#e2e8f0"/>
+    </linearGradient>
+    <linearGradient id="darkBg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#1e293b"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#a5f3fc"/>
+      <stop offset=".55" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#bbf7d0"/>
+      <stop offset="1" stop-color="#059669"/>
+    </linearGradient>
+    <linearGradient id="violet" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#c4b5fd"/>
+      <stop offset="1" stop-color="#4f46e5"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#fde68a"/>
+      <stop offset="1" stop-color="#d97706"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%">
+      <feDropShadow dx="0" dy="14" stdDeviation="14" flood-color="#0f172a" flood-opacity=".20"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 10 5 0 10z" fill="#0e7490"/>
+    </marker>
+    <style>
+      .title { fill:#0f172a; font:800 30px Inter, Segoe UI, Arial, sans-serif; }
+      .sub { fill:#475569; font:500 14px Inter, Segoe UI, Arial, sans-serif; }
+      .step { fill:#0f172a; font:800 15px Inter, Segoe UI, Arial, sans-serif; }
+      .tiny { fill:#64748b; font:600 11px Inter, Segoe UI, Arial, sans-serif; }
+      .white { fill:#f8fafc; font:800 16px Inter, Segoe UI, Arial, sans-serif; }
+      .line { stroke:#0e7490; stroke-width:2.5; fill:none; marker-end:url(#arrow); opacity:.72; }
+    </style>
+  </defs>
+  <rect width="1200" height="360" rx="28" fill="url(#bg)"/>
+  <text x="56" y="62" class="title">Prompt to Validated SQL</text>
+  <text x="58" y="90" class="sub">Each stage leaves explainable evidence that appears in the SQL Copilot workspace.</text>
+
+  <g filter="url(#shadow)">
+    <g transform="translate(56 142)">
+      <rect x="0" y="14" width="128" height="126" rx="16" fill="#fff" stroke="#cbd5e1"/>
+      <rect x="18" width="92" height="64" rx="14" fill="url(#cyan)"/>
+      <path d="M43 32h42M64 18v28" stroke="#0f172a" stroke-width="6" stroke-linecap="round"/>
+      <text x="22" y="92" class="step">Prompt</text>
+      <text x="22" y="118" class="tiny">business language</text>
+    </g>
+    <g transform="translate(224 142)">
+      <rect x="0" y="14" width="128" height="126" rx="16" fill="#fff" stroke="#cbd5e1"/>
+      <rect x="18" width="92" height="64" rx="14" fill="url(#violet)"/>
+      <circle cx="48" cy="29" r="8" fill="#fff"/>
+      <circle cx="82" cy="22" r="8" fill="#fff"/>
+      <circle cx="78" cy="46" r="8" fill="#fff"/>
+      <path d="M55 28l19-5M55 33l16 10" stroke="#eef2ff" stroke-width="4"/>
+      <text x="22" y="92" class="step">Retrieve</text>
+      <text x="22" y="118" class="tiny">schema + examples</text>
+    </g>
+    <g transform="translate(392 142)">
+      <rect x="0" y="14" width="128" height="126" rx="16" fill="#fff" stroke="#cbd5e1"/>
+      <rect x="18" width="92" height="64" rx="14" fill="url(#green)"/>
+      <path d="M43 22h42M43 38h32M43 52h24" stroke="#052e16" stroke-width="5" stroke-linecap="round"/>
+      <text x="22" y="92" class="step">Plan</text>
+      <text x="22" y="118" class="tiny">intent + joins</text>
+    </g>
+    <g transform="translate(560 142)">
+      <rect x="0" y="14" width="128" height="126" rx="16" fill="#fff" stroke="#cbd5e1"/>
+      <rect x="18" width="92" height="64" rx="14" fill="url(#amber)"/>
+      <path d="M46 36h36M64 20v34" stroke="#422006" stroke-width="6" stroke-linecap="round"/>
+      <text x="22" y="92" class="step">Assist</text>
+      <text x="22" y="118" class="tiny">NVIDIA optional</text>
+    </g>
+    <g transform="translate(728 142)">
+      <rect x="0" y="14" width="128" height="126" rx="16" fill="#fff" stroke="#cbd5e1"/>
+      <rect x="18" width="92" height="64" rx="14" fill="url(#cyan)"/>
+      <path d="M45 33l14 14 28-31" stroke="#0f172a" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="22" y="92" class="step">Validate</text>
+      <text x="22" y="118" class="tiny">read-only SQL</text>
+    </g>
+    <g transform="translate(896 142)">
+      <rect x="0" y="14" width="128" height="126" rx="16" fill="#fff" stroke="#cbd5e1"/>
+      <rect x="18" width="92" height="64" rx="14" fill="url(#violet)"/>
+      <path d="M46 48c8-28 28-28 36 0" stroke="#fff" stroke-width="6" fill="none" stroke-linecap="round"/>
+      <path d="M64 46l17-18" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+      <text x="22" y="92" class="step">Score</text>
+      <text x="22" y="118" class="tiny">confidence band</text>
+    </g>
+    <g transform="translate(1064 142)">
+      <rect x="0" y="14" width="96" height="126" rx="16" fill="url(#darkBg)" stroke="#334155"/>
+      <rect x="18" width="60" height="64" rx="14" fill="url(#green)"/>
+      <text x="31" y="39" class="white">SQL</text>
+      <text x="18" y="92" class="white">Answer</text>
+      <text x="18" y="118" class="tiny">or clarify</text>
+    </g>
+  </g>
+
+  <path class="line" d="M184 219h34"/>
+  <path class="line" d="M352 219h34"/>
+  <path class="line" d="M520 219h34"/>
+  <path class="line" d="M688 219h34"/>
+  <path class="line" d="M856 219h34"/>
+  <path class="line" d="M1024 219h34"/>
+</svg>

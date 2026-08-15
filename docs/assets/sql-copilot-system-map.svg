@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" role="img" aria-labelledby="title desc">
+  <title id="title">SQL Copilot system map</title>
+  <desc id="desc">A visual architecture map for the SQL Copilot frontend, backend, agent workflow, data layer, and optional model providers.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#08111f"/>
+      <stop offset="0.5" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#67e8f9"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#6ee7b7"/>
+      <stop offset="1" stop-color="#059669"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#fde68a"/>
+      <stop offset="1" stop-color="#d97706"/>
+    </linearGradient>
+    <linearGradient id="violet" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#c4b5fd"/>
+      <stop offset="1" stop-color="#4f46e5"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#020617" flood-opacity="0.35"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#67e8f9"/>
+    </marker>
+    <style>
+      .title { fill: #f8fafc; font: 700 34px Inter, Segoe UI, Arial, sans-serif; }
+      .subtitle { fill: #cbd5e1; font: 500 15px Inter, Segoe UI, Arial, sans-serif; }
+      .box-title { fill: #f8fafc; font: 700 18px Inter, Segoe UI, Arial, sans-serif; }
+      .box-text { fill: #cbd5e1; font: 500 13px Inter, Segoe UI, Arial, sans-serif; }
+      .tiny { fill: #94a3b8; font: 600 11px Inter, Segoe UI, Arial, sans-serif; letter-spacing: .04em; }
+      .line { stroke: #67e8f9; stroke-width: 2.5; fill: none; marker-end: url(#arrow); opacity: .75; }
+      .panel { fill: rgba(15,23,42,.84); stroke: rgba(255,255,255,.14); stroke-width: 1.2; }
+      .chip { fill: rgba(255,255,255,.08); stroke: rgba(255,255,255,.12); }
+    </style>
+  </defs>
+
+  <rect width="1200" height="560" rx="28" fill="url(#bg)"/>
+  <circle cx="130" cy="72" r="120" fill="#22d3ee" opacity=".08"/>
+  <circle cx="1060" cy="468" r="150" fill="#4f46e5" opacity=".11"/>
+
+  <text x="56" y="64" class="title">SQL Copilot Architecture</text>
+  <text x="58" y="94" class="subtitle">Planner-first SQL generation with schema grounding, LangGraph orchestration, optional NVIDIA GPT-OSS assist, and deterministic safety gates.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="56" y="142" width="214" height="242" rx="16" class="panel"/>
+    <rect x="76" y="164" width="52" height="52" rx="12" fill="url(#cyan)"/>
+    <path d="M91 190h22M102 179v22M91 204h22" stroke="#0f172a" stroke-width="4" stroke-linecap="round"/>
+    <text x="76" y="244" class="box-title">Next.js Workspace</text>
+    <text x="76" y="274" class="box-text">Dashboard</text>
+    <text x="76" y="298" class="box-text">SQL Copilot chat</text>
+    <text x="76" y="322" class="box-text">Schema graph</text>
+    <text x="76" y="346" class="box-text">Settings and Admin</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="340" y="142" width="214" height="242" rx="16" class="panel"/>
+    <rect x="360" y="164" width="52" height="52" rx="12" fill="url(#green)"/>
+    <path d="M374 181h26v22h-26zM381 188h12M381 196h18" stroke="#052e16" stroke-width="3" fill="none" stroke-linecap="round"/>
+    <text x="360" y="244" class="box-title">Flask ASGI API</text>
+    <text x="360" y="274" class="box-text">Auth and CSRF</text>
+    <text x="360" y="298" class="box-text">Runtime config</text>
+    <text x="360" y="322" class="box-text">Provider metrics</text>
+    <text x="360" y="346" class="box-text">Schema governance</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="624" y="126" width="250" height="274" rx="16" class="panel"/>
+    <rect x="646" y="150" width="52" height="52" rx="12" fill="url(#violet)"/>
+    <path d="M659 176h26M659 190h18M686 177l8 8-8 8" stroke="#f8fafc" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="646" y="230" class="box-title">Agentic SQL Engine</text>
+    <text x="646" y="260" class="box-text">Intent and entity agents</text>
+    <text x="646" y="284" class="box-text">Retrieval and schema linking</text>
+    <text x="646" y="308" class="box-text">LangGraph query workflow</text>
+    <text x="646" y="332" class="box-text">Validator and repair loop</text>
+    <text x="646" y="356" class="box-text">Coverage and confidence</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="944" y="142" width="200" height="242" rx="16" class="panel"/>
+    <rect x="966" y="164" width="52" height="52" rx="12" fill="url(#amber)"/>
+    <path d="M982 188h20M992 178v20M980 204h24" stroke="#422006" stroke-width="4" stroke-linecap="round"/>
+    <text x="966" y="244" class="box-title">Providers</text>
+    <text x="966" y="274" class="box-text">NVIDIA GPT-OSS</text>
+    <text x="966" y="298" class="box-text">OpenAI-compatible</text>
+    <text x="966" y="322" class="box-text">Ollama</text>
+    <text x="966" y="346" class="box-text">Local deterministic</text>
+  </g>
+
+  <path d="M270 263 C300 263 310 263 340 263" class="line"/>
+  <path d="M554 263 C588 263 590 263 624 263" class="line"/>
+  <path d="M874 263 C906 263 912 263 944 263" class="line"/>
+  <path d="M944 330 C868 456 338 456 270 330" class="line" opacity=".45"/>
+
+  <g>
+    <rect x="160" y="432" width="880" height="70" rx="16" class="chip"/>
+    <text x="190" y="462" class="tiny">DATA LAYER</text>
+    <text x="190" y="486" class="box-text">RAG_DOC.xlsx schema workbook</text>
+    <text x="445" y="486" class="box-text">Dynamic schema overlay</text>
+    <text x="670" y="486" class="box-text">Spider SQL examples</text>
+    <text x="875" y="486" class="box-text">SQLite telemetry</text>
+  </g>
+</svg>
