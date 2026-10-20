@@ -1,10 +1,11 @@
 import type { NextConfig } from "next";
-import path from "node:path";
 
 const nextConfig: NextConfig = {
-  distDir: process.env.NODE_ENV === "production" ? ".next-build" : ".next",
-  outputFileTracingRoot: path.resolve(__dirname),
+  output: "standalone",
+  outputFileTracingRoot: __dirname,
   typedRoutes: true,
 };
 
 export default nextConfig;
+
+import('@opennextjs/cloudflare').then(m => m.initOpenNextCloudflareForDev());

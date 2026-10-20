@@ -63,3 +63,6 @@ Thumbs.db
 # Local model/checkpoint outputs
 rl/models/*.zip
 rl/models/checkpoints/*.zip
+
+# Cloudflare local state
+.wrangler/
