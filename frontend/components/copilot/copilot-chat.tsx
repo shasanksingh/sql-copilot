@@ -126,7 +126,7 @@ export function CopilotChat() {
       .filter((item) => item.toLowerCase() !== queryText);
   }, [activeResponse, history, schemaQuery.data]);
   const providerBadge = (insights: CopilotInsights) => {
-    if (insights?.generic_sql) return "Spider Generic SQL";
+    if (insights?.generic_sql) return "General SQL guidance";
     const provider = String(insights?.llm_provider ?? insights?.provider_status?.provider ?? "local");
     const model = String(insights?.llm_model ?? insights?.provider_status?.model ?? "");
     const reason = String(insights?.fallback_reason ?? insights?.llm_trace?.fallback_reason ?? "");
@@ -194,8 +194,8 @@ export function CopilotChat() {
       <Card className="flex h-[calc(100dvh-5rem)] min-w-0 flex-col overflow-hidden md:h-[calc(100dvh-6.25rem)] xl:h-full">
         <CardHeader className="flex shrink-0 flex-col gap-2 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:px-4">
           <div className="flex flex-wrap items-center gap-2">
-            <CardTitle>Copilot Console</CardTitle>
-            <Badge tone="cyan">Streaming UI</Badge>
+            <CardTitle>SQL workspace</CardTitle>
+            <Badge tone="cyan">Live workflow</Badge>
           </div>
           <div className="flex min-w-0 flex-1 items-center gap-2 sm:max-w-md">
             <div className="relative min-w-0 flex-1">
@@ -226,7 +226,7 @@ export function CopilotChat() {
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                       <div className="flex flex-wrap gap-2">
                         <Badge tone={item.insights.generic_sql ? "indigo" : item.insights.valid ? "emerald" : "amber"}>
-                          {item.insights.generic_sql ? "Generic SQL" : item.insights.valid ? "Valid SQL" : "Needs review"}
+                          {item.insights.generic_sql ? "SQL guidance" : item.insights.valid ? "Valid SQL" : "Needs review"}
                         </Badge>
                         <Badge tone="indigo">{item.insights.confidence}% confidence</Badge>
                         <Badge tone={item.insights.fallback_used ? "amber" : item.insights.llm_provider === "nvidia" ? "cyan" : "slate"}>
@@ -235,7 +235,7 @@ export function CopilotChat() {
                         <Badge tone="slate">{item.insights.query_complexity ?? "SIMPLE"}</Badge>
                       </div>
                       <div className="flex items-center gap-1">
-                        <Button variant="ghost" className="h-8 px-2" onClick={() => setActiveResponse(item)} aria-label="Open explainability">
+                        <Button variant="ghost" className="h-8 px-2" onClick={() => setActiveResponse(item)} aria-label="Open decision trail">
                           <Sparkles className="h-4 w-4" />
                         </Button>
                         <Button variant="ghost" className="h-8 px-2" onClick={() => copySql(item.sql)} aria-label="Copy SQL">
@@ -262,7 +262,7 @@ export function CopilotChat() {
                 <div className="mt-1 text-cyan-200"><Bot className="h-4 w-4" /></div>
                 <div className="flex min-w-0 flex-1 items-center gap-3 rounded-lg border border-cyan-300/20 bg-cyan-300/10 p-3 text-sm text-cyan-100">
                   <Clock className="h-4 w-4 animate-spin" />
-                  Reading schema, planning joins, validating SQL...
+                  Reviewing your request, building the query, and checking it for safety...
                 </div>
               </motion.div>
             ) : null}
@@ -273,7 +273,7 @@ export function CopilotChat() {
             )}
             {!history.length && !pendingQuery && (
               <div className="flex min-h-48 items-center justify-center rounded-lg border border-dashed border-white/10 px-4 text-center text-sm text-slate-500">
-                Ask a schema-aware question to generate validated SQL.
+                Ask a business question to generate a reviewed SQL query.
               </div>
             )}
             <div ref={scrollAnchorRef} />
@@ -303,8 +303,8 @@ export function CopilotChat() {
               <div className="flex items-center gap-2 text-xs text-slate-500">
                 <DatabaseZap className="h-4 w-4 text-cyan-200" />
                 {schemaQuery.data
-                  ? `${schemaQuery.data.summary.tables_count} live tables, schema graph, validator, confidence scoring`
-                  : "Loading live schema catalog, validator, confidence scoring"}
+                  ? `${schemaQuery.data.summary.tables_count} live tables, relationship map, safety checks`
+                  : "Loading your data context and safety checks"}
               </div>
               <Button onClick={() => submit()} disabled={mutation.isPending}>
                 <Send className="h-4 w-4" />

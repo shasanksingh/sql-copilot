@@ -256,7 +256,7 @@ export default function SettingsPage() {
 
   return (
     <AppShell>
-      <PageHeader title="Settings" description="Runtime controls for provider access, schema retrieval, validation, and user preferences." />
+      <PageHeader title="Settings" description="Runtime controls for provider access, data context, validation, and user preferences." />
       <div className="grid gap-4 xl:grid-cols-2">
         <Card className="xl:col-span-2">
           <CardHeader className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -597,7 +597,7 @@ export default function SettingsPage() {
             <Input defaultValue="MySQL" aria-label="MySQL connection" />
             <Input defaultValue="SQL Server" aria-label="SQL Server connection" />
             <Input defaultValue="SQLite / backend/sql_agent_feedback.sqlite" aria-label="SQLite connection" />
-            <Input defaultValue="127.0.0.1:5000" aria-label="Backend URL" />
+            <Input defaultValue="Cloudflare Worker same-origin API" aria-label="Production backend route" />
             <Button variant="outline">Test connection</Button>
           </CardContent>
         </Card>
@@ -611,11 +611,11 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
         <Card>
-          <CardHeader><CardTitle>Retrieval Configuration</CardTitle></CardHeader>
+          <CardHeader><CardTitle>Data Context</CardTitle></CardHeader>
           <CardContent className="space-y-4">
-            <Input defaultValue="BM25 weight: 0.45" aria-label="BM25 weight" />
-            <Input defaultValue="Vector weight: 0.55" aria-label="Vector weight" />
-            <SettingRow label="Hybrid retrieval" checked />
+            <Input defaultValue="Table context priority: balanced" aria-label="Table context priority" />
+            <Input defaultValue="Relationship context priority: balanced" aria-label="Relationship context priority" />
+            <SettingRow label="Smart context selection" checked />
           </CardContent>
         </Card>
         <Card>

@@ -61,7 +61,7 @@ test("desktop chat keeps suggestions above the stable composer", async ({ page }
   await page.goto("/copilot");
 
   const textarea = page.getByPlaceholder("Ask for SQL in natural language");
-  await expect(page.getByText(/live tables, schema graph/i)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(/live tables, relationship map/i)).toBeVisible({ timeout: 30_000 });
   const suggestion = page.getByRole("button", { name: /^(List|Show|Count|Total|Trend)\s/i }).first();
   await expect(textarea).toBeVisible();
   await expect(suggestion).toBeVisible();
@@ -78,7 +78,7 @@ test("desktop chat keeps suggestions above the stable composer", async ({ page }
   await expect(page.getByText("Valid SQL").last()).toBeVisible({ timeout: 30_000 });
   await expect(textarea).toBeVisible();
   await expect(page.getByRole("button", { name: /^(List|Show|Count|Total|Trend)\sProjects/i }).first()).toBeVisible();
-  await expect(page.getByText(/live tables, schema graph/i)).toBeVisible();
+  await expect(page.getByText(/live tables, relationship map/i)).toBeVisible();
 
   const viewport = page.viewportSize();
   const settledBox = await textarea.boundingBox();
@@ -88,7 +88,7 @@ test("desktop chat keeps suggestions above the stable composer", async ({ page }
   await page.getByRole("button", { name: "Collapse sidebar" }).click();
   await expect(page.getByTitle("Dashboard")).toBeVisible();
   await expect(page.getByRole("button", { name: "Expand sidebar" })).toBeVisible();
-  await expect(page.getByText("Enterprise AI workspace")).toBeHidden();
+  await expect(page.getByText("Enterprise analytics workspace")).toBeHidden();
 });
 
 test("mobile navigation and composer remain inside the viewport", async ({ page }) => {

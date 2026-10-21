@@ -8,7 +8,7 @@ export default function CopilotPage() {
       <PageHeader
         compact
         title="SQL Copilot Chat"
-        description="Generate schema-linked SQL with validation, confidence gating, and explainable plans."
+        description="Ask business questions, receive reviewed SQL, and inspect the decision trail."
       />
       <CopilotChat />
     </AppShell>

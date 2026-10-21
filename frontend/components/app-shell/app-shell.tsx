@@ -39,7 +39,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="h-dvh overflow-hidden">
+    <div className="workspace-shell h-dvh overflow-hidden">
       <div className="fixed inset-y-0 left-0 z-30 hidden lg:block">
         <Sidebar />
       </div>

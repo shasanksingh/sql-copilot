@@ -33,6 +33,11 @@ function apiBase() {
     return CONFIGURED_API_BASE ?? "http://127.0.0.1:5000";
   }
   if (!CONFIGURED_API_BASE) {
+    if (!isLoopback(window.location.hostname)) {
+      throw new Error(
+        "Production API URL is not configured. Set NEXT_PUBLIC_API_BASE_URL to the HTTPS API URL served by the Cloudflare Worker and rebuild the frontend."
+      );
+    }
     return `${window.location.protocol}//${window.location.hostname}:5000`;
   }
   try {

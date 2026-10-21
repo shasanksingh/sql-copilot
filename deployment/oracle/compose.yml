@@ -1,0 +1,21 @@
+services:
+  flask_api:
+    build:
+      context: ../..
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./.env.production
+    environment:
+      SQL_COPILOT_PROJECT_ROOT: /app
+      SQL_COPILOT_RUNTIME_DIR: /app/.runtime
+      SQL_COPILOT_CACHE_DIR: /app/.runtime/cache
+      SQL_COPILOT_SQLITE_DIR: /app/.runtime/sqlite
+      SQL_COPILOT_LOG_DIR: /app/.runtime/logs
+      SQL_COPILOT_TEMP_DIR: /app/.runtime/tmp
+      SQL_COPILOT_FAISS_DIR: /app/.runtime/cache/faiss
+      SQL_COPILOT_MODEL_DIR: /app/.runtime/models
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./runtime:/app/.runtime

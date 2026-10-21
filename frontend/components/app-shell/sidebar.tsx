@@ -141,7 +141,7 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
             </div>
 
             <div className="text-xs text-slate-500">
-              Enterprise AI workspace
+              Enterprise analytics workspace
             </div>
           </div>
         )}
@@ -206,11 +206,11 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
           <Icon3D icon={BarChart3} tone="cyan" size="lg" className="mb-3" />
 
           <div className="text-sm font-medium text-white">
-            Grounded SQL pipeline
+            Reliable SQL workflow
           </div>
 
           <p className="mt-1 text-xs leading-5 text-slate-400">
-            Schema graph, validation, confidence gating, and NVIDIA assist share the same checked workflow.
+            Every result is planned against your data, checked for safety, and ready for review.
           </p>
         </div>
       )}

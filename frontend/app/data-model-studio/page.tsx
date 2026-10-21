@@ -108,7 +108,7 @@ export default function DataModelStudioPage() {
     mutationFn: () => createSchemaStudioTable(schemaPayload()),
     onSuccess: async () => {
       await invalidateSchema();
-      pushToast({ title: "Live schema updated", description: "Metadata, retrieval, and planner state were refreshed.", variant: "success" });
+      pushToast({ title: "Live schema updated", description: "Metadata, relationships, and planning state were refreshed.", variant: "success" });
     },
     onError: (error) => pushToast({
       title: "Live schema update failed",
