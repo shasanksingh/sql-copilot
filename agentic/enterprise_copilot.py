@@ -42,7 +42,7 @@ except ImportError:  # pragma: no cover
 
 
 TokenSet = set[str]
-QUERY_CACHE_VERSION = "enterprise-v9"
+QUERY_CACHE_VERSION = "enterprise-v10"
 
 
 def _tokens(text: str) -> list[str]:
@@ -3978,6 +3978,26 @@ class EnterpriseSQLCopilot:
             "events": [],
             "counters": {},
         }
+        # Cache lookup must run before the specialised semantic domains.  Those
+        # domains cache their reviewed results too, and checking only after
+        # them caused repeated custody/business questions to call the reviewer
+        # again unnecessarily.
+        if allow_cache:
+            cached = self.cache.get(query)
+            if cached:
+                cached.execution_trace = {
+                    **execution_trace,
+                    "cache_hit": True,
+                    "events": [{"stage": "cache", "cache_hit": True}],
+                    "counters": dict(self.runtime_counters),
+                }
+                cached.runtime_metrics = {
+                    "request_id": request_id,
+                    "total_ms": round((time.perf_counter() - run_started_at) * 1000, 3),
+                    "cache_hit": True,
+                    "workflow_engine": workflow_run.get("engine", self.workflow.engine),
+                }
+                return cached
         custody_result = self._run_custody_balance_logic(
             query,
             request_id,
@@ -4007,23 +4027,6 @@ class EnterpriseSQLCopilot:
         )
         if business_result is not None:
             return business_result
-        if allow_cache:
-            cached = self.cache.get(query)
-            if cached:
-                cached.execution_trace = {
-                    **execution_trace,
-                    "cache_hit": True,
-                    "events": [{"stage": "cache", "cache_hit": True}],
-                    "counters": dict(self.runtime_counters),
-                }
-                cached.runtime_metrics = {
-                    "request_id": request_id,
-                    "total_ms": round((time.perf_counter() - run_started_at) * 1000, 3),
-                    "cache_hit": True,
-                    "workflow_engine": workflow_run.get("engine", self.workflow.engine),
-                }
-                return cached
-
         stage_started = time.perf_counter()
         intent = self.intent_agent.detect(query)
         self._trace_mark(execution_trace, "intent_agent_calls", "intent_detection", stage_started, {"operation": intent.operation, "aggregations": intent.aggregations})
