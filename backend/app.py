@@ -3736,6 +3736,26 @@ def auth_me():
     return jsonify({"user": g.current_user, "expires_at": g.auth_session["expires_at"]})
 
 
+@app.post("/auth/security-question")
+def auth_set_security_question():
+    payload = request.get_json(silent=True) or {}
+    try:
+        user = auth_store.set_security_question(
+            int(g.current_user["id"]),
+            str(payload.get("security_question") or ""),
+            str(payload.get("security_answer") or ""),
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc), "code": "INVALID_SECURITY_QUESTION"}), 400
+    auth_store.log(
+        "auth_logs",
+        "security_question_updated",
+        user_id=user["id"],
+        ip_address=_client_ip(),
+    )
+    return jsonify({"user": user, "message": "Recovery question saved."})
+
+
 @app.post("/auth/logout")
 def auth_logout():
     auth_store.revoke_session(str(g.auth_session["token_id"]))

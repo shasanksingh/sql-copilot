@@ -201,6 +201,7 @@ export type AuthUser = {
   updated_at: string;
   last_login?: string | null;
   is_active: boolean;
+  has_security_question?: boolean;
 };
 
 export type AuthResponse = {

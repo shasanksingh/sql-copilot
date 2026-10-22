@@ -228,6 +228,13 @@ export function getCurrentUser() {
   return request<AuthResponse>("/auth/me");
 }
 
+export function saveSecurityQuestion(payload: { security_question: string; security_answer: string }) {
+  return request<AuthResponse & { message: string }>("/auth/security-question", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
 export function logout() {
   return request<{ status: string }>("/auth/logout", { method: "POST" });
 }

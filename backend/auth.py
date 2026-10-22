@@ -42,6 +42,10 @@ def isoformat(value: datetime) -> str:
 
 
 def public_user(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    try:
+        has_security_question = bool(row["security_question"])
+    except (IndexError, KeyError):
+        has_security_question = False
     return {
         "id": int(row["id"]),
         "name": str(row["name"]),
@@ -51,6 +55,7 @@ def public_user(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         "updated_at": row["updated_at"],
         "last_login": row["last_login"],
         "is_active": bool(row["is_active"]),
+        "has_security_question": has_security_question,
     }
 
 
@@ -361,6 +366,30 @@ class AuthStore:
                 (email.strip().lower(),),
             ).fetchone()
         return str(row["security_question"]) if row and row["security_question"] else None
+
+    def set_security_question(self, user_id: int, question: str, answer: str) -> dict[str, Any]:
+        question = " ".join(question.strip().split())
+        normalised_answer = normalise_security_answer(answer)
+        if question not in SECURITY_QUESTIONS:
+            raise ValueError("Choose one of the available security questions.")
+        if len(normalised_answer) < 2:
+            raise ValueError("Enter an answer for your security question.")
+        answer_hash = bcrypt.hashpw(normalised_answer.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE users
+                SET security_question = ?, security_answer_hash = ?, updated_at = ?
+                WHERE id = ? AND is_active = 1
+                """,
+                (question, answer_hash, isoformat(utc_now()), user_id),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError("Your account is no longer active.")
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if row is None:
+            raise RuntimeError("Security question update failed.")
+        return public_user(row)
 
     def create_password_reset_from_security_answer(self, email: str, answer: str) -> str | None:
         normalised_answer = normalise_security_answer(answer)

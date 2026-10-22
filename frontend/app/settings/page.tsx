@@ -17,6 +17,7 @@ import {
   RefreshCw,
   ServerCog,
   ShieldCheck,
+  ShieldQuestion,
   SlidersHorizontal,
   Sun,
   Zap
@@ -28,7 +29,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { configureEmail, configureProvider, getRuntimeConfig } from "@/features/api/client";
+import { configureEmail, configureProvider, getRuntimeConfig, saveSecurityQuestion } from "@/features/api/client";
+import { useAuth } from "@/features/auth/auth-provider";
 import { useCopilotStore } from "@/features/store/use-copilot-store";
 
 const NVIDIA_DEFAULTS = {
@@ -73,9 +75,17 @@ const EMAIL_DEFAULTS = {
   testRecipient: ""
 };
 
+const SECURITY_QUESTIONS = [
+  "What city were you born in?",
+  "What was the name of your first school?",
+  "What was the name of your first pet?",
+  "What is the name of a memorable childhood friend?"
+];
+
 type EmailForm = typeof EMAIL_DEFAULTS;
 
 export default function SettingsPage() {
+  const { user, setUser } = useAuth();
   const theme = useCopilotStore((state) => state.theme);
   const setTheme = useCopilotStore((state) => state.setTheme);
   const queryClient = useQueryClient();
@@ -85,6 +95,8 @@ export default function SettingsPage() {
   const [emailForm, setEmailForm] = useState<EmailForm>(EMAIL_DEFAULTS);
   const [smtpPassword, setSmtpPassword] = useState("");
   const [emailDirty, setEmailDirty] = useState(false);
+  const [securityQuestion, setSecurityQuestion] = useState(SECURITY_QUESTIONS[0]);
+  const [securityAnswer, setSecurityAnswer] = useState("");
 
   const runtimeQuery = useQuery({
     queryKey: ["runtime-config"],
@@ -207,6 +219,14 @@ export default function SettingsPage() {
       setSmtpPassword("");
       setEmailDirty(false);
       await queryClient.invalidateQueries({ queryKey: ["runtime-config"] });
+    }
+  });
+
+  const securityQuestionMutation = useMutation({
+    mutationFn: () => saveSecurityQuestion({ security_question: securityQuestion, security_answer: securityAnswer }),
+    onSuccess: (response) => {
+      setUser(response.user);
+      setSecurityAnswer("");
     }
   });
 
@@ -411,6 +431,23 @@ export default function SettingsPage() {
                 Refresh status
               </Button>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card className="xl:col-span-2">
+          <CardHeader className="flex flex-row items-center justify-between gap-3">
+            <CardTitle className="flex items-center gap-2"><ShieldQuestion className="h-4 w-4 text-cyan-200" />Account Recovery</CardTitle>
+            <Badge tone={user?.has_security_question ? "emerald" : "amber"}>{user?.has_security_question ? "Recovery ready" : "Add a question"}</Badge>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-slate-500">Set or replace the security question used when you reset your password. Your answer is stored as a secure hash.</p>
+            <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto] md:items-end">
+              <Field label="Security question"><select value={securityQuestion} onChange={(event) => setSecurityQuestion(event.target.value)} className="h-10 w-full rounded-md border border-white/10 bg-slate-950/70 px-3 text-sm text-white outline-none ring-cyan-300/30 focus:ring-4">{SECURITY_QUESTIONS.map((question) => <option key={question} value={question}>{question}</option>)}</select></Field>
+              <Field label="Your answer"><Input value={securityAnswer} onChange={(event) => setSecurityAnswer(event.target.value)} autoComplete="off" /></Field>
+              <Button onClick={() => securityQuestionMutation.mutate()} disabled={securityQuestionMutation.isPending || securityAnswer.trim().length < 2}>{securityQuestionMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}Save recovery</Button>
+            </div>
+            {securityQuestionMutation.error ? <div className="rounded-md border border-rose-300/25 bg-rose-300/10 px-3 py-2 text-sm text-rose-100">{securityQuestionMutation.error instanceof Error ? securityQuestionMutation.error.message : "Unable to save the recovery question."}</div> : null}
+            {securityQuestionMutation.isSuccess ? <div className="rounded-md border border-emerald-300/25 bg-emerald-300/10 px-3 py-2 text-sm text-emerald-100">Recovery question saved.</div> : null}
           </CardContent>
         </Card>
 
