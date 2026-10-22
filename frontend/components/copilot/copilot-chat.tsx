@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
-import { Bot, Clock, Copy, Download, Mic, Search, Send, Sparkles, Square, Trash2, UserRound } from "lucide-react";
+import { Bot, Clock, Copy, Download, Mic, Search, Send, Sparkles, Square, Trash2, UserRound, X } from "lucide-react";
 import type React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { generateSql, getSchemaCatalog } from "@/features/api/client";
@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ExplainabilityPanel } from "./explainability-panel";
 import { Badge } from "@/components/ui/badge";
-import type { SchemaCatalogColumn, SchemaCatalogTable } from "@/features/api/types";
+import type { CopilotResponse, SchemaCatalogColumn, SchemaCatalogTable } from "@/features/api/types";
 
 const fallbackPrompts = [
   "Show custody positions for each customer",
@@ -76,6 +76,7 @@ export function CopilotChat() {
   const [query, setQuery] = useState("");
   const [pendingQuery, setPendingQuery] = useState("");
   const [historyFilter, setHistoryFilter] = useState("");
+  const [mobileReview, setMobileReview] = useState<CopilotResponse | null>(null);
   const scrollAnchorRef = useRef<HTMLDivElement>(null);
   const history = useCopilotStore((state) => state.history);
   const activeResponse = useCopilotStore((state) => state.activeResponse);
@@ -232,7 +233,15 @@ export function CopilotChat() {
                         </Button>
                       </div>
                     </div>
+                    <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-cyan-300/20 bg-cyan-300/10 p-2 xl:hidden">
+                      <div className="min-w-0"><div className="text-xs font-semibold text-cyan-100">Explain this answer</div><div className="text-[11px] text-slate-400">Scores, checks, and workflow</div></div>
+                      <Button variant="outline" className="h-8 shrink-0 px-2.5 text-xs" onClick={() => setMobileReview(item)}>
+                        <Sparkles className="h-3.5 w-3.5" />
+                        View review
+                      </Button>
+                    </div>
                     <SqlBlock sql={item.sql} />
+                    {index === history.length - 1 && suggestions.length ? <div className="mt-3 border-t border-white/10 pt-3 xl:hidden"><div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Recommended next questions</div><div className="flex max-w-full gap-2 overflow-x-auto pb-1 scrollbar-thin">{suggestions.slice(0, 4).map((suggestion) => <Button key={suggestion} variant="outline" className="h-8 shrink-0 px-2.5 text-xs" onClick={() => submit(suggestion)} disabled={mutation.isPending}>{suggestion}</Button>)}</div></div> : null}
                   </Message>
                 </motion.div>
               ))}
@@ -308,10 +317,24 @@ export function CopilotChat() {
       </Card>
       <AnimatePresence>
         {activeResponse ? (
-          <motion.div className="min-h-0 xl:h-full xl:overflow-hidden xl:pr-1" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 24 }}>
+          <motion.div className="hidden min-h-0 xl:block xl:h-full xl:overflow-hidden xl:pr-1" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 24 }}>
             <div className="h-[72dvh] min-h-0 xl:h-full">
               <ExplainabilityPanel response={activeResponse} />
             </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+      <AnimatePresence>
+        {mobileReview ? (
+          <motion.div className="fixed inset-0 z-50 xl:hidden" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <button className="absolute inset-0 bg-slate-950/75 backdrop-blur-sm" onClick={() => setMobileReview(null)} aria-label="Close Explainable AI review" />
+            <motion.section role="dialog" aria-modal="true" aria-label="Explainable AI review" className="absolute inset-x-0 bottom-0 flex h-[88dvh] flex-col overflow-hidden rounded-t-3xl border border-white/10 bg-slate-950 shadow-2xl" initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 28, stiffness: 300 }}>
+              <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-3">
+                <div><div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-cyan-300">Answer review</div><div className="mt-0.5 text-sm font-semibold text-white">Explainable AI</div></div>
+                <Button variant="ghost" className="h-8 w-8 px-0" onClick={() => setMobileReview(null)} aria-label="Close review"><X className="h-4 w-4" /></Button>
+              </div>
+              <div className="min-h-0 flex-1 p-3"><ExplainabilityPanel response={mobileReview} /></div>
+            </motion.section>
           </motion.div>
         ) : null}
       </AnimatePresence>
