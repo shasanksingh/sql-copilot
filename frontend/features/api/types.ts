@@ -4,6 +4,8 @@ export type CopilotInsights = {
   valid: boolean;
   validation: string;
   source: string;
+  attempts?: number;
+  max_attempts?: number;
   summary?: string;
   tables: string[];
   columns: string[];
@@ -220,6 +222,8 @@ export type ForgotPasswordResponse = {
   reset_token?: string;
   reset_url?: string;
   email_delivery?: PasswordResetDelivery;
+  requires_security_answer?: boolean;
+  security_question?: string;
 };
 
 export type FeedbackItem = {

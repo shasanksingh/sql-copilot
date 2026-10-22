@@ -37,7 +37,7 @@ export const useCopilotStore = create<CopilotState>()(
       setTheme: (theme) => set({ theme }),
       addResponse: (response) =>
         set((state) => ({
-          history: [...state.history, response].slice(-50),
+          history: [...state.history, response].slice(-6),
           activeResponse: response
         })),
       setActiveResponse: (response) => set({ activeResponse: response }),

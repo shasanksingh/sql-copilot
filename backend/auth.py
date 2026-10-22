@@ -17,6 +17,12 @@ import jwt
 
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 PASSWORD_PATTERN = re.compile(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,128}$")
+SECURITY_QUESTIONS = {
+    "What city were you born in?",
+    "What was the name of your first school?",
+    "What was the name of your first pet?",
+    "What is the name of a memorable childhood friend?",
+}
 LOG_TABLES = {
     "audit_logs",
     "frontend_logs",
@@ -46,6 +52,11 @@ def public_user(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         "last_login": row["last_login"],
         "is_active": bool(row["is_active"]),
     }
+
+
+def normalise_security_answer(answer: str) -> str:
+    """Normalise an answer before hashing without storing the answer itself."""
+    return " ".join(answer.strip().casefold().split())
 
 
 class AuthStore:
@@ -79,6 +90,8 @@ class AuthStore:
                     name TEXT NOT NULL,
                     email TEXT NOT NULL UNIQUE COLLATE NOCASE,
                     password_hash TEXT NOT NULL,
+                    security_question TEXT,
+                    security_answer_hash TEXT,
                     role TEXT NOT NULL DEFAULT 'user',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -186,6 +199,14 @@ class AuthStore:
                 CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
                 """
             )
+            existing_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(users)").fetchall()
+            }
+            if "security_question" not in existing_columns:
+                conn.execute("ALTER TABLE users ADD COLUMN security_question TEXT")
+            if "security_answer_hash" not in existing_columns:
+                conn.execute("ALTER TABLE users ADD COLUMN security_answer_hash TEXT")
 
     def signing_secret(self) -> str:
         if self._signing_secret:
@@ -210,6 +231,8 @@ class AuthStore:
         email: str,
         password: str,
         role: str = "user",
+        security_question: str = "",
+        security_answer: str = "",
     ) -> dict[str, Any]:
         name = " ".join(name.strip().split())[:120]
         email = email.strip().lower()[:254]
@@ -223,18 +246,41 @@ class AuthStore:
             )
         if role not in {"user", "admin"}:
             role = "user"
+        security_question = " ".join(security_question.strip().split())
+        normalised_answer = normalise_security_answer(security_answer)
+        if security_question and security_question not in SECURITY_QUESTIONS:
+            raise ValueError("Choose one of the available security questions.")
+        if security_question and len(normalised_answer) < 2:
+            raise ValueError("Enter an answer for your security question.")
+        if normalised_answer and not security_question:
+            raise ValueError("Choose a security question before entering an answer.")
         password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
+        security_answer_hash = (
+            bcrypt.hashpw(normalised_answer.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
+            if normalised_answer
+            else None
+        )
         now = isoformat(utc_now())
         try:
             with self._connect() as conn:
                 cursor = conn.execute(
                     """
                     INSERT INTO users (
-                        name, email, password_hash, role, created_at, updated_at, is_active
+                        name, email, password_hash, security_question, security_answer_hash,
+                        role, created_at, updated_at, is_active
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, 1)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
                     """,
-                    (name, email, password_hash, role, now, now),
+                    (
+                        name,
+                        email,
+                        password_hash,
+                        security_question or None,
+                        security_answer_hash,
+                        role,
+                        now,
+                        now,
+                    ),
                 )
                 row = conn.execute(
                     "SELECT * FROM users WHERE id = ?",
@@ -283,25 +329,59 @@ class AuthStore:
             raise RuntimeError("User role update failed.")
         return public_user(row)
 
-    def authenticate(self, email: str, password: str) -> dict[str, Any] | None:
+    def authenticate_with_reason(self, email: str, password: str) -> tuple[dict[str, Any] | None, str]:
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM users WHERE email = ? COLLATE NOCASE",
                 (email.strip().lower(),),
             ).fetchone()
-            if (
-                row is None
-                or not bool(row["is_active"])
-                or not bcrypt.checkpw(password.encode("utf-8"), str(row["password_hash"]).encode("ascii"))
-            ):
-                return None
+            if row is None or not bool(row["is_active"]):
+                return None, "ACCOUNT_NOT_FOUND"
+            if not bcrypt.checkpw(password.encode("utf-8"), str(row["password_hash"]).encode("ascii")):
+                return None, "INVALID_PASSWORD"
             now = isoformat(utc_now())
             conn.execute(
                 "UPDATE users SET last_login = ?, updated_at = ? WHERE id = ?",
                 (now, now, row["id"]),
             )
             refreshed = conn.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
-        return public_user(refreshed) if refreshed else None
+        return (public_user(refreshed), "") if refreshed else (None, "ACCOUNT_NOT_FOUND")
+
+    def authenticate(self, email: str, password: str) -> dict[str, Any] | None:
+        user, _ = self.authenticate_with_reason(email, password)
+        return user
+
+    def password_recovery_question(self, email: str) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT security_question FROM users
+                WHERE email = ? COLLATE NOCASE AND is_active = 1
+                """,
+                (email.strip().lower(),),
+            ).fetchone()
+        return str(row["security_question"]) if row and row["security_question"] else None
+
+    def create_password_reset_from_security_answer(self, email: str, answer: str) -> str | None:
+        normalised_answer = normalise_security_answer(answer)
+        if len(normalised_answer) < 2:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, security_answer_hash FROM users
+                WHERE email = ? COLLATE NOCASE AND is_active = 1
+                """,
+                (email.strip().lower(),),
+            ).fetchone()
+            if not row or not row["security_answer_hash"]:
+                return None
+            if not bcrypt.checkpw(
+                normalised_answer.encode("utf-8"),
+                str(row["security_answer_hash"]).encode("ascii"),
+            ):
+                return None
+        return self.create_password_reset(email)
 
     def issue_session(
         self,

@@ -11,7 +11,7 @@ from collections import deque
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
-from threading import Timer
+from threading import Lock, Timer
 
 import pandas as pd
 from flask import Flask, g, jsonify, make_response, request, send_from_directory
@@ -451,7 +451,7 @@ EMAIL_ENV_WRITE_ORDER = (
 def _provider_default_settings(provider: str) -> dict[str, str]:
     if provider == "nvidia":
         return {
-            "model": "openai/gpt-oss-20b",
+            "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
             "base_url": "https://integrate.api.nvidia.com/v1",
         }
     if provider == "openai":
@@ -2145,7 +2145,16 @@ class SQLChatSession:
         self.history.clear()
 
 
-session = SQLChatSession()
+_chat_sessions: dict[int, SQLChatSession] = {}
+_chat_sessions_lock = Lock()
+
+
+def chat_session_for_user(user_id: int) -> SQLChatSession:
+    """Return an isolated, bounded conversation window for the signed-in user."""
+    with _chat_sessions_lock:
+        if user_id not in _chat_sessions:
+            _chat_sessions[user_id] = SQLChatSession(max_history=6)
+        return _chat_sessions[user_id]
 
 
  
@@ -3646,6 +3655,8 @@ def auth_signup():
             str(payload.get("name") or ""),
             str(payload.get("email") or ""),
             str(payload.get("password") or ""),
+            security_question=str(payload.get("security_question") or ""),
+            security_answer=str(payload.get("security_answer") or ""),
         )
     except ValueError as exc:
         auth_store.log(
@@ -3655,7 +3666,8 @@ def auth_signup():
             details={"email": str(payload.get("email") or "")[:254], "reason": str(exc)},
             ip_address=_client_ip(),
         )
-        return jsonify({"error": str(exc)}), 400
+        code = "ACCOUNT_EXISTS" if "already exists" in str(exc).lower() else "INVALID_SIGNUP"
+        return jsonify({"error": str(exc), "code": code}), 400
     session_data = auth_store.issue_session(
         user,
         bool(payload.get("remember")),
@@ -3680,7 +3692,7 @@ def auth_login():
     if limited:
         return limited
     payload = request.get_json(silent=True) or {}
-    user = auth_store.authenticate(
+    user, reason = auth_store.authenticate_with_reason(
         str(payload.get("email") or ""),
         str(payload.get("password") or ""),
     )
@@ -3692,7 +3704,15 @@ def auth_login():
             details={"email": str(payload.get("email") or "")[:254]},
             ip_address=_client_ip(),
         )
-        return jsonify({"error": "Invalid email or password."}), 401
+        if reason == "ACCOUNT_NOT_FOUND":
+            return jsonify({
+                "error": "No account was found for this email. Create an account to continue.",
+                "code": "ACCOUNT_NOT_FOUND",
+            }), 404
+        return jsonify({
+            "error": "That password does not match this account. Please try again.",
+            "code": "INVALID_PASSWORD",
+        }), 401
     session_data = auth_store.issue_session(
         user,
         bool(payload.get("remember")),
@@ -3737,36 +3757,48 @@ def auth_forgot_password():
         return limited
     payload = request.get_json(silent=True) or {}
     email = str(payload.get("email") or "").strip().lower()
-    token = auth_store.create_password_reset(email)
+    security_answer = str(payload.get("security_answer") or "")
+    account = auth_store.get_user_by_email(email)
+    question = auth_store.password_recovery_question(email)
+    if not account:
+        return jsonify({
+            "error": "No account was found for this email. Create an account to continue.",
+            "code": "ACCOUNT_NOT_FOUND",
+        }), 404
+    if not question:
+        return jsonify({
+            "error": "This account does not yet have a security question. Sign in and add one before using recovery.",
+            "code": "SECURITY_QUESTION_UNAVAILABLE",
+        }), 409
+    if not security_answer:
+        return jsonify({
+            "message": "Answer your security question to choose a new password.",
+            "requires_security_answer": True,
+            "security_question": question,
+        })
+    token = auth_store.create_password_reset_from_security_answer(email, security_answer)
+    if not token:
+        auth_store.log(
+            "auth_logs",
+            "password_recovery_answer_rejected",
+            level="warning",
+            details={"account_found": True},
+            ip_address=_client_ip(),
+        )
+        return jsonify({
+            "error": "That answer does not match. Please try again.",
+            "code": "INCORRECT_SECURITY_ANSWER",
+        }), 401
     response: dict[str, object] = {
-        "message": "If the account exists, a password reset link has been sent."
+        "message": "Answer confirmed. Choose a new password.",
+        "reset_token": token,
     }
-    expose_token = os.getenv(
-        "AUTH_EXPOSE_RESET_TOKEN",
-        "1" if APP_ENV != "production" else "0",
-    ).lower() in {"1", "true", "yes"}
-    delivery: dict[str, object] = {}
-    if token:
-        delivery = send_password_reset_email(EMAIL_CONFIG, email, token)
-        if APP_ENV != "production":
-            response["email_delivery"] = delivery
-            response["reset_url"] = password_reset_url(EMAIL_CONFIG, token)
-    elif APP_ENV != "production":
-        response["email_delivery"] = {
-            "sent": False,
-            "status": "account_not_found",
-            "provider": EMAIL_CONFIG.backend,
-            "reason": "No active account exists for that email in this local database.",
-        }
-    if token and expose_token:
-        response["reset_token"] = token
     auth_store.log(
         "auth_logs",
         "password_reset_requested",
         details={
-            "account_found": bool(token),
-            "email_delivery_status": delivery.get("status") if delivery else "account_not_found",
-            "email_delivery_provider": delivery.get("provider") if delivery else "",
+            "account_found": True,
+            "recovery_method": "security_question",
         },
         ip_address=_client_ip(),
     )
@@ -4472,9 +4504,10 @@ def sql_api():
         data = request.get_json(silent=True) or {}
         query = (data.get("query") or "").strip()
         reset = data.get("reset", False)
+        user_session = chat_session_for_user(int(g.current_user["id"]))
 
         if reset or query.lower() == "reset":
-            session.clear()
+            user_session.clear()
             log_step("[session] Chat session reset")
             return jsonify({
                 "query": query,
@@ -4501,7 +4534,7 @@ def sql_api():
 
         log_step("")
         log_step(f"[request] User query: {query}")
-        result = generate_sql(query, session)
+        result = generate_sql(query, user_session)
         if (
             str(result.get("sql", "")).lower().strip().startswith("select")
             and not result.get("insights", {}).get("generic_sql")
@@ -4511,10 +4544,7 @@ def sql_api():
         return jsonify({
             "query": query,
             "sql": result["sql"],
-            "message": (
-                "Generated using enterprise schema agents, grounded validation, "
-                "confidence scoring, and provider fallback."
-            ),
+            "message": "Your request was reviewed and prepared as read-only SQL.",
             "insights": result["insights"],
         })
 

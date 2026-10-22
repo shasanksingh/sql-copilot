@@ -16,7 +16,6 @@ import {
   LayoutDashboard,
   Network,
   RefreshCw,
-  ServerCog,
   ShieldCheck,
   Timer,
   Wrench,
@@ -150,25 +149,7 @@ export default function DashboardPage() {
   });
   const schemaQuery = useQuery({ queryKey: ["relationships"], queryFn: getRelationships });
   const metrics = metricsQuery.data;
-  const providerStatus = metrics?.llm_provider;
   const llmMetrics = metrics?.llm_metrics;
-  const providerIsLocal = providerStatus?.provider === "local";
-  const providerReady = providerIsLocal || Boolean(providerStatus?.available);
-  const providerConfigured = providerIsLocal || Boolean(providerStatus?.configured);
-  const providerName = providerStatus?.provider === "nvidia"
-    ? "NVIDIA GPT-OSS-20B"
-    : providerStatus?.provider === "local"
-      ? "Local Planner"
-      : providerStatus?.provider === "openai"
-        ? "Custom OpenAI-Compatible"
-        : providerStatus?.provider ?? "Local Planner";
-  const providerMessage = providerReady
-    ? providerIsLocal
-      ? "Deterministic SQL planner is active"
-      : `${providerStatus?.model ?? "model"} ready`
-    : providerConfigured
-      ? providerStatus?.reason ?? "Provider configured, currently falling back"
-      : providerStatus?.reason ?? "NVIDIA_API_KEY is not configured";
   const selectedRange = ranges.find((item) => item.key === range) ?? ranges[1];
   const isDashboardLoading = !rangeHydrated || metricsQuery.isLoading || schemaQuery.isLoading;
   const isRangeFetching = rangeHydrated && metricsQuery.isFetching;
@@ -246,53 +227,6 @@ export default function DashboardPage() {
       tone: "amber",
       actionHref: "/copilot",
       actionLabel: "Review Queries"
-    }
-  ];
-
-  const runtimeStats: DashboardMetric[] = [
-    {
-      key: "llm_runtime",
-      label: "LLM Runtime",
-      value: providerName,
-      helper: providerMessage,
-      detail: "Current provider selected for assisted SQL generation, including whether the backend can reach it now.",
-      icon: ServerCog,
-      tone: providerReady ? "emerald" : "amber",
-      actionHref: "/settings",
-      actionLabel: "Provider Settings"
-    },
-    {
-      key: "provider_success",
-      label: "Provider Success",
-      value: percent(llmMetrics?.success_rate ?? 0),
-      helper: `${llmMetrics?.success_count ?? 0}/${llmMetrics?.request_count ?? 0} LLM calls`,
-      detail: "Remote provider success rate from the backend LLM client metrics.",
-      icon: ServerCog,
-      tone: providerReady ? "emerald" : "indigo",
-      actionHref: "/settings",
-      actionLabel: "Provider Settings"
-    },
-    {
-      key: "fallback_rate",
-      label: "Fallback Rate",
-      value: percent(rangeMetrics.fallbackRate),
-      helper: `${rangeMetrics.fallbackCount} fallbacks in range`,
-      detail: "Percent of query attempts that used deterministic fallback instead of a remote model response.",
-      icon: RefreshCw,
-      tone: rangeMetrics.fallbackCount ? "amber" : "cyan",
-      actionHref: "/copilot",
-      actionLabel: "Run Query"
-    },
-    {
-      key: "p95_llm_latency",
-      label: "P95 LLM Latency",
-      value: `${Math.round(llmMetrics?.p95_latency_ms ?? 0)}ms`,
-      helper: `${Math.round(llmMetrics?.average_latency_ms ?? 0)}ms average`,
-      detail: "Ninety-fifth percentile provider latency from recent backend LLM calls.",
-      icon: Timer,
-      tone: "indigo",
-      actionHref: "/settings",
-      actionLabel: "Provider Settings"
     }
   ];
 
@@ -415,18 +349,17 @@ export default function DashboardPage() {
     }
   ];
 
-  const activeMetric = [...stats, ...runtimeStats, ...schemaStats, ...telemetryStats, ...growthStats].find((item) => item.key === activeMetricKey) ?? null;
+  const activeMetric = [...stats, ...schemaStats, ...telemetryStats, ...growthStats].find((item) => item.key === activeMetricKey) ?? null;
 
   return (
     <AppShell>
       <PageHeader
         title="Dashboard"
-        description="Operational view of SQL generation quality, provider health, confidence, schema coverage, and recent activity."
+        description="Review request quality, confidence, and recent SQL activity."
         meta={(
           <>
             <Badge tone="cyan">{filteredTrend.length} events</Badge>
             <Badge tone="emerald">{percent(rangeMetrics.successRate)} success</Badge>
-            <Badge tone={providerReady ? "emerald" : "amber"}>{providerName}</Badge>
           </>
         )}
         actions={(
@@ -478,16 +411,6 @@ export default function DashboardPage() {
           />
         ))}
       </div>
-      <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        {runtimeStats.map((item) => (
-          <MetricButtonCard
-            key={item.key}
-            metric={item}
-            isLoading={!rangeHydrated || metricsQuery.isLoading}
-            onOpen={() => setActiveMetricKey(item.key)}
-          />
-        ))}
-      </div>
       <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1fr)_380px]">
         <div className="space-y-3">
           <RangeFilterBar
@@ -499,10 +422,10 @@ export default function DashboardPage() {
           />
           <AnalyticsChart trend={filteredTrend} />
         </div>
-        <Card>
+        <Card className="h-full">
           <CardContent>
             <div className="mb-4 flex items-center justify-between">
-              <div className="text-sm font-semibold text-white">Recent Activity</div>
+              <div className="text-sm font-semibold text-slate-950 dark:text-white">Recent activity</div>
               <Badge tone="cyan">{percent(rangeMetrics.successRate)} success</Badge>
             </div>
             {filteredTrend.slice(-6).reverse().map((item, index) => (
@@ -516,9 +439,7 @@ export default function DashboardPage() {
                 <div className="mt-2 flex flex-wrap items-center gap-2 px-1 text-xs text-slate-500">
                   <Icon3D icon={item.valid ? CheckCircle2 : FileCode2} tone={item.valid ? "emerald" : "amber"} size="xs" />
                   <Badge tone={item.valid ? "emerald" : "amber"} className="h-6">{item.valid ? "Valid" : "Review"}</Badge>
-                  <Badge tone={item.fallback_used ? "amber" : item.provider === "nvidia" ? "cyan" : "slate"} className="h-6">
-                    {item.fallback_used ? "Fallback" : item.provider === "nvidia" ? "NVIDIA" : "Local"}
-                  </Badge>
+                  {item.fallback_used ? <Badge tone="amber" className="h-6">Alternative plan</Badge> : null}
                   <span>{Math.round(item.confidence)}% confidence</span>
                   <span>{Math.round(item.latency_ms ?? item.execution_time * 1000)}ms</span>
                 </div>

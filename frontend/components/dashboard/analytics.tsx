@@ -11,12 +11,10 @@ type ChartDatum = {
   planner: number;
   validator: number;
   coverage: number;
-  model: number | null;
   latencyMs: number;
   query: string;
   valid: boolean;
   fallback: boolean;
-  provider: string;
 };
 
 function clampPercent(value?: number | null) {
@@ -39,7 +37,7 @@ function AnalyticsTooltip({ active, payload, label }: { active?: boolean; payloa
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
         <Badge tone={item.valid ? "emerald" : "amber"} className="h-6">{item.valid ? "Valid" : "Review"}</Badge>
-        <Badge tone={item.fallback ? "amber" : "cyan"} className="h-6">{item.fallback ? "Fallback" : item.provider}</Badge>
+        {item.fallback ? <Badge tone="amber" className="h-6">Alternative plan</Badge> : null}
       </div>
     </div>
   );
@@ -59,12 +57,10 @@ export function AnalyticsChart({ trend = [] }: { trend?: FeedbackTrendPoint[] })
     planner: clampPercent(point.planner_score),
     validator: clampPercent(point.validator_score),
     coverage: clampPercent(point.coverage_confidence ?? point.confidence),
-    model: point.model_confidence && !point.fallback_used ? clampPercent(point.model_confidence) : null,
     latencyMs: point.latency_ms ?? point.execution_time * 1000,
     query: point.query,
     valid: point.valid,
-    fallback: Boolean(point.fallback_used),
-    provider: point.provider === "nvidia" ? "NVIDIA" : point.provider ?? "local"
+    fallback: Boolean(point.fallback_used)
   }));
   const validRate = chartData.length
     ? Math.round((chartData.filter((item) => item.valid).length / chartData.length) * 100)
@@ -115,7 +111,6 @@ export function AnalyticsChart({ trend = [] }: { trend?: FeedbackTrendPoint[] })
               <Line yAxisId="score" type="monotone" dataKey="planner" name="Planner" stroke="#818cf8" strokeWidth={2.25} dot={false} />
               <Line yAxisId="score" type="monotone" dataKey="validator" name="Validator" stroke="#34d399" strokeWidth={2.25} dot={false} />
               <Line yAxisId="score" type="monotone" dataKey="coverage" name="Coverage" stroke="#f472b6" strokeWidth={1.75} dot={false} />
-              <Line yAxisId="score" type="monotone" dataKey="model" name="Model" stroke="#fbbf24" strokeWidth={2} dot={{ r: 2 }} connectNulls={false} />
             </ComposedChart>
           </ResponsiveContainer>
         ) : (

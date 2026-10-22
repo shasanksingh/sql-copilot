@@ -2,26 +2,27 @@
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
-import { Bot, Clock, Copy, DatabaseZap, Download, Search, Send, Sparkles, Trash2, UserRound } from "lucide-react";
+import { Bot, Clock, Copy, Download, Mic, Search, Send, Sparkles, Square, Trash2, UserRound } from "lucide-react";
 import type React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { generateSql, getSchemaCatalog } from "@/features/api/client";
 import { useCopilotStore } from "@/features/store/use-copilot-store";
 import { useToastStore } from "@/features/store/use-toast-store";
+import { useSpeechRecognition } from "@/features/voice/use-speech-recognition";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ExplainabilityPanel } from "./explainability-panel";
 import { Badge } from "@/components/ui/badge";
-import type { CopilotInsights, SchemaCatalogColumn, SchemaCatalogTable } from "@/features/api/types";
+import type { SchemaCatalogColumn, SchemaCatalogTable } from "@/features/api/types";
 
 const fallbackPrompts = [
-  "Show active records by status",
-  "Count records by department",
-  "Total revenue by quarter",
-  "Find open work due this week",
-  "Top clients by amount"
+  "Show custody positions for each customer",
+  "Customers with unpaid invoices",
+  "Headcount by department",
+  "Open work assigned to employees",
+  "Custody movements by portfolio this month"
 ];
 
 function humanize(value: string) {
@@ -88,6 +89,7 @@ export function CopilotChat() {
     queryFn: getSchemaCatalog,
     staleTime: 60_000
   });
+  const voice = useSpeechRecognition(setQuery);
   const filteredHistory = useMemo(() => {
     const term = historyFilter.trim().toLowerCase();
     return history
@@ -109,7 +111,7 @@ export function CopilotChat() {
       .filter((item) => item.insights.valid)
       .map((item) => item.query);
     if (!activeResponse) {
-      return uniquePrompts([...schemaDriven, ...recentSuccessful, ...fallbackPrompts]);
+      return uniquePrompts([...recentSuccessful, ...fallbackPrompts, ...schemaDriven]);
     }
     const tables = activeResponse.insights.selected_tables?.length
       ? activeResponse.insights.selected_tables
@@ -122,22 +124,9 @@ export function CopilotChat() {
     const contextual = uniquePrompts(related, 6)
       .filter((item) => item.toLowerCase() !== queryText)
       .slice(0, 4);
-    return uniquePrompts([...contextual, ...schemaDriven, ...recentSuccessful, ...fallbackPrompts])
+    return uniquePrompts([...contextual, ...recentSuccessful, ...fallbackPrompts, ...schemaDriven])
       .filter((item) => item.toLowerCase() !== queryText);
   }, [activeResponse, history, schemaQuery.data]);
-  const providerBadge = (insights: CopilotInsights) => {
-    if (insights?.generic_sql) return "General SQL guidance";
-    const provider = String(insights?.llm_provider ?? insights?.provider_status?.provider ?? "local");
-    const model = String(insights?.llm_model ?? insights?.provider_status?.model ?? "");
-    const reason = String(insights?.fallback_reason ?? insights?.llm_trace?.fallback_reason ?? "");
-    const skipReason = String(insights?.llm_trace?.skip_reason ?? "");
-    if (reason === "network_blocked") return "NVIDIA network blocked";
-    if (skipReason === "deterministic_plan_validated") return "Validated deterministic plan";
-    if (insights?.fallback_used) return "Validated fallback";
-    if (provider === "local") return "Local Planner";
-    if (provider === "nvidia") return "NVIDIA GPT-OSS-20B";
-    return model || provider;
-  };
 
   const mutation = useMutation({
     mutationFn: generateSql,
@@ -190,12 +179,11 @@ export function CopilotChat() {
   };
 
   return (
-    <div className={activeResponse ? "grid min-h-0 gap-3 xl:h-[calc(100dvh-6.25rem)] xl:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_390px]" : "grid min-h-0 gap-3 xl:h-[calc(100dvh-6.25rem)]"}>
-      <Card className="flex h-[calc(100dvh-5rem)] min-w-0 flex-col overflow-hidden md:h-[calc(100dvh-6.25rem)] xl:h-full">
+    <div className={activeResponse ? "grid min-h-0 gap-3 xl:h-[calc(100dvh-10.75rem)] xl:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_390px]" : "grid min-h-0 gap-3 xl:h-[calc(100dvh-10.75rem)]"}>
+      <Card className="flex min-h-[680px] min-w-0 flex-col overflow-hidden xl:h-full xl:min-h-0">
         <CardHeader className="flex shrink-0 flex-col gap-2 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:px-4">
           <div className="flex flex-wrap items-center gap-2">
-            <CardTitle>SQL workspace</CardTitle>
-            <Badge tone="cyan">Live workflow</Badge>
+            <CardTitle>Conversation</CardTitle>
           </div>
           <div className="flex min-w-0 flex-1 items-center gap-2 sm:max-w-md">
             <div className="relative min-w-0 flex-1">
@@ -225,14 +213,12 @@ export function CopilotChat() {
                   <Message icon={<Bot className="h-4 w-4" />} tone="assistant">
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                       <div className="flex flex-wrap gap-2">
-                        <Badge tone={item.insights.generic_sql ? "indigo" : item.insights.valid ? "emerald" : "amber"}>
-                          {item.insights.generic_sql ? "SQL guidance" : item.insights.valid ? "Valid SQL" : "Needs review"}
+                        <Badge tone={item.insights.valid ? "emerald" : "amber"}>
+                          {item.insights.valid ? "Reviewed SQL" : "Needs review"}
                         </Badge>
                         <Badge tone="indigo">{item.insights.confidence}% confidence</Badge>
-                        <Badge tone={item.insights.fallback_used ? "amber" : item.insights.llm_provider === "nvidia" ? "cyan" : "slate"}>
-                          {providerBadge(item.insights)}
-                        </Badge>
-                        <Badge tone="slate">{item.insights.query_complexity ?? "SIMPLE"}</Badge>
+                        {item.insights.cache_hit ? <Badge tone="cyan">Saved answer</Badge> : null}
+                        {(item.insights.repair_attempts ?? 0) > 0 ? <Badge tone="amber">{item.insights.repair_attempts} refinement{item.insights.repair_attempts === 1 ? "" : "s"}</Badge> : null}
                       </div>
                       <div className="flex items-center gap-1">
                         <Button variant="ghost" className="h-8 px-2" onClick={() => setActiveResponse(item)} aria-label="Open decision trail">
@@ -246,11 +232,6 @@ export function CopilotChat() {
                         </Button>
                       </div>
                     </div>
-                    {item.insights.generic_warning ? (
-                      <div className="mb-2 rounded-md border border-indigo-300/20 bg-indigo-300/10 p-2 text-xs leading-5 text-indigo-100">
-                        {item.insights.generic_warning}
-                      </div>
-                    ) : null}
                     <SqlBlock sql={item.sql} />
                   </Message>
                 </motion.div>
@@ -278,7 +259,7 @@ export function CopilotChat() {
             )}
             <div ref={scrollAnchorRef} />
           </div>
-          <div className="sticky bottom-0 z-10 shrink-0 border-t border-white/10 bg-slate-950/92 p-2 backdrop-blur-xl">
+          <div className="shrink-0 border-t border-white/10 bg-slate-950/92 p-2.5 backdrop-blur-xl">
             <div className="mb-1.5 flex max-w-full gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
               {suggestions.map((item) => (
                 <Button key={item} variant="outline" className="h-7 shrink-0 px-2.5 text-xs" onClick={() => submit(item)} disabled={mutation.isPending}>
@@ -288,7 +269,7 @@ export function CopilotChat() {
               ))}
             </div>
             <Textarea
-              className="max-h-20 min-h-11 resize-none break-words p-2 text-sm leading-5"
+              className="max-h-32 min-h-[76px] resize-y break-words p-3 text-sm leading-5"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => {
@@ -299,17 +280,28 @@ export function CopilotChat() {
               }}
               placeholder="Ask for SQL in natural language"
             />
-            <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2 text-xs text-slate-500">
-                <DatabaseZap className="h-4 w-4 text-cyan-200" />
-                {schemaQuery.data
-                  ? `${schemaQuery.data.summary.tables_count} live tables, relationship map, safety checks`
-                  : "Loading your data context and safety checks"}
-              </div>
-              <Button onClick={() => submit()} disabled={mutation.isPending}>
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs text-slate-500">Speak or type a business question</div>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-10 px-3"
+                  onClick={() => {
+                    if (voice.isListening) voice.stop();
+                    else if (!voice.start(query)) pushToast({ title: "Voice input is unavailable", description: "Use a current Chromium-based browser to dictate your question.", variant: "warning" });
+                  }}
+                  aria-label={voice.isListening ? "Stop live voice input" : "Start live voice input"}
+                  title={voice.isListening ? "Stop live voice input" : "Start live voice input"}
+                >
+                  {voice.isListening ? <Square className="h-4 w-4 text-rose-300" /> : <Mic className="h-4 w-4" />}
+                  {voice.isListening ? "Listening" : "Voice"}
+                </Button>
+                <Button onClick={() => submit()} disabled={mutation.isPending}>
                 <Send className="h-4 w-4" />
                 {mutation.isPending ? "Generating" : "Generate SQL"}
-              </Button>
+                </Button>
+              </div>
             </div>
           </div>
         </CardContent>

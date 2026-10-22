@@ -33,11 +33,11 @@ import { useCopilotStore } from "@/features/store/use-copilot-store";
 
 const NVIDIA_DEFAULTS = {
   provider: "nvidia",
-  model: "openai/gpt-oss-20b",
+  model: "nvidia/nemotron-3.5-lightning-30b-a3b",
   baseUrl: "https://integrate.api.nvidia.com/v1",
   temperature: "1",
-  topP: "1",
-  maxTokens: "4096",
+  topP: "0.95",
+  maxTokens: "2048",
   maxRetries: "0",
   timeoutSeconds: "60"
 };

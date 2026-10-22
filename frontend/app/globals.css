@@ -82,6 +82,13 @@ body {
 .light .aurora-panel,
 .light .auth-form-surface,
 .light .glass-panel,
+.light .bg-slate-950,
+.light .bg-slate-900,
+.light .bg-slate-900\/60,
+.light .bg-slate-900\/70,
+.light .bg-slate-900\/80,
+.light .bg-slate-950\/30,
+.light .bg-slate-950\/35,
 .light .bg-slate-950\/45,
 .light .bg-slate-950\/55,
 .light .bg-slate-950\/60,
@@ -135,8 +142,10 @@ body {
 .light .border-amber-300\/15,
 .light .border-amber-300\/20,
 .light .border-amber-300\/25 { border-color: rgba(146, 64, 14, 0.24); }
+.light .bg-white\/\[0\.03\],
+.light .bg-white\/\[0\.035\],
 .light .bg-white\/\[0\.04\],
-.light .bg-white\/\[0\.06\] { background-color: rgba(255, 255, 255, 0.72); }
+.light .bg-white\/\[0\.06\] { background-color: rgba(255, 255, 255, 0.84); }
 .light .bg-cyan-300\/5,
 .light .bg-cyan-300\/10,
 .light .bg-cyan-300\/15 { background-color: rgba(14, 116, 144, 0.1); }

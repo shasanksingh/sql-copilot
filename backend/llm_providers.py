@@ -26,7 +26,7 @@ PROVIDER_COOLDOWN_ERROR_CATEGORIES = {
     "timeout",
 }
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
-NVIDIA_CHAT_MODEL = "openai/gpt-oss-20b"
+NVIDIA_CHAT_MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b"
 
 
 def _truthy(value: str | None) -> bool:
@@ -58,6 +58,7 @@ class ProviderConfig:
     max_generation_retries: int
     max_tokens: int = 4096
     top_p: float = 1.0
+    reasoning_budget: int = 0
 
     @property
     def chat_enabled(self) -> bool:
@@ -208,6 +209,7 @@ def load_provider_config(model_root: Path) -> ProviderConfig:
         max_generation_retries=_int_env("MAX_GENERATION_RETRIES", 3),
         max_tokens=_int_env("LLM_MAX_TOKENS", 4096),
         top_p=_float_env("LLM_TOP_P", 1.0),
+        reasoning_budget=max(0, _int_env("LLM_REASONING_BUDGET", 0)),
     )
 
 
@@ -881,7 +883,7 @@ class NvidiaHttpChatCompletionsProvider(BaseLLMProvider):
             messages if isinstance(messages, list)
             else [{"role": "user", "content": str(messages)}]
         )
-        return {
+        payload: dict[str, Any] = {
             "model": self.config.chat_model,
             "messages": normalized_messages,
             "temperature": self.config.temperature,
@@ -889,6 +891,10 @@ class NvidiaHttpChatCompletionsProvider(BaseLLMProvider):
             "max_tokens": self.config.max_tokens,
             "stream": False,
         }
+        if self.config.reasoning_budget and "nemotron-3.5-lightning" in self.config.chat_model:
+            payload["chat_template_kwargs"] = {"enable_thinking": True}
+            payload["reasoning_budget"] = min(self.config.reasoning_budget, self.config.max_tokens)
+        return payload
 
     def generate(self, messages: list[dict[str, str]] | str, **_: Any) -> LLMGenerationResult:
         if self._runtime_blocked():

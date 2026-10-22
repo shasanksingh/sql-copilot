@@ -52,7 +52,7 @@ export function PageHeader({
 
   return (
     <section className={cn(
-      "mb-5 overflow-hidden rounded-lg border border-white/10 bg-white/[0.06] shadow-glow backdrop-blur-xl dark:bg-slate-950/45",
+      "mb-5 overflow-hidden rounded-lg border border-slate-200/80 bg-white/80 shadow-glow backdrop-blur-xl dark:border-white/10 dark:bg-slate-950/45",
       compact && "mb-3"
     )}>
       <div className={cn(
@@ -62,10 +62,10 @@ export function PageHeader({
         <div className="flex min-w-0 gap-4">
           <Icon3D icon={HeaderIcon} tone={tone ?? iconConfig.tone} size={compact ? "md" : "lg"} />
           <div className="min-w-0">
-            <h1 className={cn("font-semibold tracking-normal text-white", compact ? "text-xl md:text-2xl" : "text-2xl md:text-3xl")}>
+            <h1 className={cn("font-semibold tracking-normal text-slate-950 dark:text-white", compact ? "text-xl md:text-2xl" : "text-2xl md:text-3xl")}>
               {title}
             </h1>
-            <p className={cn("max-w-3xl text-slate-400", compact ? "mt-1 text-xs leading-5" : "mt-2 text-sm leading-6")}>
+            <p className={cn("max-w-3xl text-slate-600 dark:text-slate-400", compact ? "mt-1 text-xs leading-5" : "mt-2 text-sm leading-6")}>
               {description}
             </p>
             {meta ? <div className="mt-3 flex flex-wrap gap-2">{meta}</div> : null}

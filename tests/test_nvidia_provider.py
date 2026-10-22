@@ -27,7 +27,7 @@ def test_nvidia_provider_env_aliases(monkeypatch, tmp_path: Path) -> None:
 
     assert config.provider == "nvidia"
     assert config.adapter == "openai-compatible"
-    assert config.chat_model == "openai/gpt-oss-20b"
+    assert config.chat_model == "nvidia/nemotron-3.5-lightning-30b-a3b"
     assert config.base_url == "https://integrate.api.nvidia.com/v1"
     assert config.chat_enabled is True
 
@@ -53,7 +53,7 @@ def test_nvidia_api_key_selects_provider_when_unset(monkeypatch, tmp_path: Path)
     config = load_provider_config(tmp_path)
 
     assert config.provider == "nvidia"
-    assert config.chat_model == "openai/gpt-oss-20b"
+    assert config.chat_model == "nvidia/nemotron-3.5-lightning-30b-a3b"
 
 
 def test_nvidia_api_key_wins_over_stale_generic_key(monkeypatch, tmp_path: Path) -> None:

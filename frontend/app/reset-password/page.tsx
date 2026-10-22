@@ -7,6 +7,7 @@ import { AuthShell } from "@/components/auth/auth-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { resetPassword } from "@/features/api/client";
+import { useToastStore } from "@/features/store/use-toast-store";
 
 export default function ResetPasswordPage() {
   return (
@@ -22,26 +23,29 @@ function ResetPasswordForm() {
   const [token, setToken] = useState(searchParams.get("token") ?? "");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const pushToast = useToastStore((state) => state.pushToast);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (password !== confirmPassword) return setMessage("Passwords do not match.");
+    if (password !== confirmPassword) {
+      pushToast({ title: "The passwords do not match", variant: "warning" });
+      return;
+    }
     setLoading(true);
     try {
       const response = await resetPassword(token, password);
-      setMessage(response.message);
+      pushToast({ title: "Password updated", description: response.message, variant: "success" });
       setTimeout(() => router.replace("/login"), 900);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Unable to reset password.");
+      pushToast({ title: "Unable to update password", description: error instanceof Error ? error.message : "Please try again.", variant: "error" });
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <AuthShell title="Choose a new password" description="Reset tokens expire after 30 minutes and can only be used once.">
+    <AuthShell title="Choose a new password" description="Set a strong password to complete your account recovery.">
       <form className="space-y-4" onSubmit={submit}>
         <label className="block">
           <span className="mb-2 block text-sm text-slate-300">Reset token</span>
@@ -55,7 +59,6 @@ function ResetPasswordForm() {
           <span className="mb-2 block text-sm text-slate-300">Confirm password</span>
           <Input type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required />
         </label>
-        {message ? <div className="rounded-md border border-cyan-300/20 bg-cyan-300/10 p-3 text-sm text-cyan-100">{message}</div> : null}
         <Button className="w-full" type="submit" disabled={loading}>
           <KeyRound className="h-4 w-4" />
           {loading ? "Updating password" : "Update password"}

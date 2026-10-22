@@ -1,11 +1,5 @@
-import { ArrowUpRight, CheckCircle2, Command, LockKeyhole, Sparkles } from "lucide-react";
+import { CheckCircle2, LockKeyhole, Sparkles } from "lucide-react";
 import type React from "react";
-
-const valuePoints = [
-  "Ask questions in plain language",
-  "Review the decision trail behind each result",
-  "Keep every workspace session under your control"
-];
 
 export function AuthShell({
   title,
@@ -20,7 +14,7 @@ export function AuthShell({
     <main className="relative grid min-h-dvh overflow-hidden bg-[#050816] lg:grid-cols-[minmax(0,1.15fr)_minmax(440px,.85fr)]">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_15%_20%,rgba(34,211,238,.15),transparent_27%),radial-gradient(circle_at_72%_0%,rgba(129,140,248,.17),transparent_28%),linear-gradient(rgba(148,163,184,.035)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,.035)_1px,transparent_1px)] bg-[size:auto,auto,44px_44px,44px_44px]" />
       <section className="relative hidden border-r border-white/10 px-10 py-9 lg:flex lg:flex-col xl:px-14 xl:py-12">
-        <header className="flex items-center justify-between">
+        <header className="flex items-center">
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-300 via-sky-300 to-indigo-400 text-slate-950 shadow-[0_12px_30px_rgba(34,211,238,.23)]">
               <Sparkles className="h-5 w-5" />
@@ -29,10 +23,6 @@ export function AuthShell({
               <div className="font-semibold tracking-tight text-white">SQL Copilot</div>
               <div className="text-xs text-slate-400">Decision-ready analytics</div>
             </div>
-          </div>
-          <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-cyan-100">
-            <span className="h-1.5 w-1.5 rounded-full bg-cyan-300 shadow-[0_0_10px_rgba(34,211,238,.9)]" />
-            Workspace ready
           </div>
         </header>
 
@@ -49,20 +39,7 @@ export function AuthShell({
             A focused workspace for exploring your business data, reviewing trusted SQL, and understanding the path behind every answer.
           </p>
 
-          <div className="mt-10 grid max-w-2xl gap-3 sm:grid-cols-3">
-            {valuePoints.map((point, index) => (
-              <div key={point} className="aurora-panel rounded-2xl p-4">
-                <div className="mb-5 flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-cyan-300/25 to-indigo-400/25 text-xs font-semibold text-cyan-100">0{index + 1}</div>
-                <p className="text-sm leading-6 text-slate-200">{point}</p>
-              </div>
-            ))}
-          </div>
         </div>
-
-        <footer className="flex items-center justify-between text-xs text-slate-500">
-          <span className="flex items-center gap-2"><Command className="h-3.5 w-3.5 text-cyan-200" />Built for thoughtful decisions</span>
-          <span className="flex items-center gap-1 text-slate-400">Explore your workspace <ArrowUpRight className="h-3.5 w-3.5" /></span>
-        </footer>
       </section>
 
       <section className="relative flex min-h-dvh items-center justify-center px-5 py-8 sm:px-8 lg:px-10">

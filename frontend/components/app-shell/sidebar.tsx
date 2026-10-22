@@ -4,7 +4,6 @@ import type { Route } from "next";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  BarChart3,
   Bot,
   Braces,
   Database,
@@ -136,7 +135,7 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
 
         {!compact && (
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold text-white">
+            <div className="text-sm font-semibold text-slate-950 dark:text-white">
               SQL Copilot
             </div>
 
@@ -201,19 +200,6 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
         })}
       </nav>
 
-      {!compact && (
-        <div className="m-4 rounded-lg border border-cyan-300/20 bg-gradient-to-br from-cyan-300/10 to-indigo-400/10 p-4">
-          <Icon3D icon={BarChart3} tone="cyan" size="lg" className="mb-3" />
-
-          <div className="text-sm font-medium text-white">
-            Reliable SQL workflow
-          </div>
-
-          <p className="mt-1 text-xs leading-5 text-slate-400">
-            Every result is planned against your data, checked for safety, and ready for review.
-          </p>
-        </div>
-      )}
     </aside>
   );
 }

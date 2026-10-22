@@ -24,6 +24,17 @@ import type {
 
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "");
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly code?: string
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 function isLoopback(hostname: string) {
   return hostname === "localhost" || hostname === "127.0.0.1";
 }
@@ -86,7 +97,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    throw new Error(body || `API request failed: ${response.status}`);
+    try {
+      const parsed = JSON.parse(body) as { error?: string; code?: string; message?: string };
+      throw new ApiError(
+        parsed.error || parsed.message || `API request failed: ${response.status}`,
+        response.status,
+        parsed.code
+      );
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new ApiError(body || `API request failed: ${response.status}`, response.status);
+    }
   }
 
   return response.json() as Promise<T>;
@@ -186,6 +207,8 @@ export function signup(payload: {
   name: string;
   email: string;
   password: string;
+  security_question: string;
+  security_answer: string;
   remember?: boolean;
 }) {
   return request<AuthResponse>("/auth/signup", {
@@ -209,10 +232,10 @@ export function logout() {
   return request<{ status: string }>("/auth/logout", { method: "POST" });
 }
 
-export function forgotPassword(email: string) {
+export function forgotPassword(email: string, securityAnswer?: string) {
   return request<ForgotPasswordResponse>("/auth/forgot-password", {
     method: "POST",
-    body: JSON.stringify({ email })
+    body: JSON.stringify({ email, security_answer: securityAnswer })
   });
 }
 
