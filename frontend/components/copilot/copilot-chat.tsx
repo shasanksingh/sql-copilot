@@ -308,8 +308,10 @@ export function CopilotChat() {
       </Card>
       <AnimatePresence>
         {activeResponse ? (
-          <motion.div className="min-h-0 xl:overflow-y-auto xl:pr-1 scrollbar-thin" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 24 }}>
-            <ExplainabilityPanel response={activeResponse} />
+          <motion.div className="min-h-0 xl:h-full xl:overflow-hidden xl:pr-1" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 24 }}>
+            <div className="h-[72dvh] min-h-0 xl:h-full">
+              <ExplainabilityPanel response={activeResponse} />
+            </div>
           </motion.div>
         ) : null}
       </AnimatePresence>
