@@ -27,6 +27,7 @@ from .custody_balance_domain import (
     build_available_balance_sql,
     parse_balance_request,
 )
+from .business_operations_domain import parse_business_operations_rule
 from .langgraph_workflow import build_sql_copilot_workflow
 
 try:
@@ -2971,6 +2972,115 @@ class EnterpriseSQLCopilot:
         if not customer_context:
             return None
 
+        # The generic planner recognises this table, but does not know that a
+        # custody movement month is measured with security_movement.trade_date.
+        # Keep that business mapping explicit and auditable.
+        if "movement" in q and "security_movement" in self.graph.tables:
+            by_portfolio = bool(re.search(r"\b(by|per)\s+portfolio\b", q))
+            this_month = bool(re.search(r"\b(this|current)\s+month\b", q))
+            if by_portfolio:
+                date_condition = (
+                    "WHERE sm.trade_date >= DATE_TRUNC('month', CURRENT_DATE)\n"
+                    "  AND sm.trade_date < DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month'\n"
+                    if this_month else ""
+                )
+                return {
+                    "name": "custody_movements_by_portfolio_this_month" if this_month else "custody_movements_by_portfolio",
+                    "domain_label": "Custody Portfolio",
+                    "main_table": "security_movement",
+                    "selected_columns": [
+                        ("security_movement", "portfolio_number"),
+                        ("security_movement", "amount_quantity"),
+                        *([("security_movement", "trade_date")] if this_month else []),
+                    ],
+                    "filters": ([{"table": "security_movement", "column": "trade_date", "operator": "this_month", "value": ""}] if this_month else []),
+                    "aggregations": [
+                        {"table": "security_movement", "column": "*", "function": "COUNT", "alias": "movement_count"},
+                        {"table": "security_movement", "column": "amount_quantity", "function": "SUM", "alias": "net_movement_quantity"},
+                    ],
+                    "group_by": [("security_movement", "portfolio_number")],
+                    "order_by": ("security_movement.portfolio_number", "ASC"),
+                    "sql": (
+                        "SELECT\n"
+                        "  sm.portfolio_number,\n"
+                        "  COUNT(*) AS movement_count,\n"
+                        "  SUM(sm.amount_quantity) AS net_movement_quantity\n"
+                        "FROM security_movement sm\n"
+                        f"{date_condition}"
+                        "GROUP BY sm.portfolio_number\n"
+                        "ORDER BY sm.portfolio_number ASC;"
+                    ),
+                    "required": ["custody movement", "portfolio", "trade date" if this_month else "movement date"],
+                    "matched": ["custody movement", "portfolio", "trade date" if this_month else "movement date"],
+                    "complexity": "MODERATE",
+                    "business_steps": [
+                        "Use security movements as the custody movement source.",
+                        "Group movement records by portfolio number.",
+                        *(["Apply the current calendar month to trade_date."] if this_month else []),
+                    ],
+                }
+
+            return {
+                "name": "custody_movement_register",
+                "domain_label": "Custody Portfolio",
+                "main_table": "security_movement",
+                "selected_columns": [
+                    ("security_movement", "trade_date"),
+                    ("security_movement", "portfolio_number"),
+                    ("security_movement", "instrument_id"),
+                    ("security_movement", "amount_quantity"),
+                    ("security_movement", "credit_and_debit_flag"),
+                ],
+                "filters": [],
+                "sql": (
+                    "SELECT\n"
+                    "  sm.trade_date,\n"
+                    "  sm.portfolio_number,\n"
+                    "  sm.instrument_id,\n"
+                    "  sm.amount_quantity,\n"
+                    "  sm.credit_and_debit_flag\n"
+                    "FROM security_movement sm\n"
+                    "ORDER BY sm.trade_date DESC;"
+                ),
+                "required": ["custody movement"],
+                "matched": ["custody movement"],
+                "complexity": "SIMPLE",
+                "business_steps": ["Use security movements as the custody movement source."],
+            }
+
+        if re.search(r"\bcustody\s+positions?\b", q):
+            return {
+                "name": "custody_positions_by_customer",
+                "domain_label": "Custody Portfolio",
+                "main_table": "custody_position",
+                "selected_columns": [
+                    ("custody_position", "business_partner_id"),
+                    ("custody_position", "portfolio_id"),
+                    ("custody_position", "position_number"),
+                    ("custody_position", "instrument_id"),
+                    ("custody_position", "position_type"),
+                ],
+                "filters": [],
+                "order_by": ("custody_position.business_partner_id", "ASC"),
+                "sql": (
+                    "SELECT\n"
+                    "  cp.business_partner_id,\n"
+                    "  cp.portfolio_id,\n"
+                    "  cp.position_number,\n"
+                    "  cp.instrument_id,\n"
+                    "  cp.position_type\n"
+                    "FROM custody_position cp\n"
+                    "ORDER BY cp.business_partner_id ASC, cp.portfolio_id ASC, cp.position_number ASC;"
+                ),
+                "required": ["customer", "custody position", "portfolio"],
+                "matched": ["customer", "custody position", "portfolio"],
+                "complexity": "MODERATE",
+                "business_steps": [
+                    "Use custody_position as the customer position source.",
+                    "Present each customer, portfolio, position, and instrument together.",
+                ],
+            }
+
         business_partner_id = self._extract_custody_parameter(query, (
             r"\bbusiness\s+partner(?:\s+id)?\s*(?:is|=|:)?\s*([A-Za-z0-9][A-Za-z0-9_-]*)",
             r"\bbp(?:\s+|_)?id\s*(?:is|=|:)?\s*([A-Za-z0-9][A-Za-z0-9_-]*)",
@@ -3093,6 +3203,7 @@ class EnterpriseSQLCopilot:
         sql: str,
         plan: QueryPlan,
         validation: str,
+        domain_label: str = "Custody",
     ) -> tuple[dict[str, object], float]:
         status = self._provider_status()
         trace: dict[str, object] = {
@@ -3106,7 +3217,7 @@ class EnterpriseSQLCopilot:
                 {
                     "stage": "business_logic_lookup",
                     "success": True,
-                    "summary": "Matched TCS custody customer query rule and assembled schema-grounded SQL.",
+                    "summary": f"Matched {domain_label} query rule and assembled schema-grounded SQL.",
                     "matched_rule": rule.get("name"),
                 }
             ],
@@ -3119,7 +3230,7 @@ class EnterpriseSQLCopilot:
 
         trace["active"] = True
         prompt = (
-            "Review this deterministic TCS custody SQL against the named business rule. "
+            f"Review this deterministic {domain_label} SQL against the named business rule. "
             "Return only JSON with keys: approved, issues, missing_requirements, "
             "reasoning_summary, model_confidence. Do not rewrite SQL unless the "
             "rule is violated."
@@ -3170,8 +3281,9 @@ class EnterpriseSQLCopilot:
         execution_trace: dict[str, object],
         *,
         allow_cache: bool,
+        rule: dict[str, object] | None = None,
     ) -> CopilotResult | None:
-        rule = self._parse_custody_customer_rule(query)
+        rule = rule or self._parse_custody_customer_rule(query)
         if rule is None:
             return None
 
@@ -3180,19 +3292,31 @@ class EnterpriseSQLCopilot:
         selected_columns = list(rule.get("selected_columns", []))
         main_table = str(rule["main_table"])
         complexity = str(rule.get("complexity", "MODERATE"))
+        joins = [
+            rel if isinstance(rel, SchemaRelationship) else SchemaRelationship(*rel)
+            for rel in list(rule.get("joins", []))
+        ]
+        aggregations = list(rule.get("aggregations", []))
+        group_by = list(rule.get("group_by", []))
+        order_by = rule.get("order_by")
         plan = QueryPlan(
             main_table=main_table,
             selected_columns=selected_columns,
-            joins=[],
+            joins=joins,
             filters=filters,
-            aggregations=[],
-            group_by=[],
-            order_by=None,
+            aggregations=aggregations,
+            group_by=group_by,
+            order_by=order_by if isinstance(order_by, tuple) else None,
             limit=None,
             confidence=95,
         )
         terms = _tokens(query)
-        intent = Intent(filters=filters, requires_join=False)
+        intent = Intent(
+            aggregations=[str(item.get("function", "")) for item in aggregations if isinstance(item, dict)],
+            filters=filters,
+            requires_join=bool(joins),
+            group_by=bool(group_by),
+        )
         entities = EntityExtraction(
             raw_terms=terms,
             canonical_terms=terms,
@@ -3215,6 +3339,7 @@ class EnterpriseSQLCopilot:
             sql,
             plan,
             validation,
+            str(rule.get("domain_label", "Custody")),
         )
         execution_trace.setdefault("events", []).extend([
             {
@@ -3268,14 +3393,14 @@ class EnterpriseSQLCopilot:
             },
             "join": {
                 "score": components["join"],
-                "required_tables": [main_table],
-                "joined_tables": [main_table],
+                "required_tables": sorted(self._plan_tables(plan)),
+                "joined_tables": sorted(self._plan_tables(plan)),
                 "missing": [],
             },
             "aggregation": {
                 "score": components["aggregation"],
-                "required": [],
-                "matched": [],
+                "required": [str(item.get("function", "")) for item in aggregations if isinstance(item, dict)],
+                "matched": [str(item.get("function", "")) for item in aggregations if isinstance(item, dict)],
                 "missing": [],
             },
             "semantic": {
@@ -3298,12 +3423,11 @@ class EnterpriseSQLCopilot:
                     for item in filters
                     if isinstance(item, dict)
                 },
-                "steps": [
-                    "Resolve customer wording to TCS custody schema.",
+                "steps": list(rule.get("business_steps", [
+                    "Resolve customer wording to the custody schema.",
                     "Use custody_position for customer/portfolio/position records.",
                     "Use security_movement for bought-instrument movement questions.",
-                    "Keep demo clients table only for explicit client wording.",
-                ],
+                ])),
             },
             "llm": llm_trace,
         }
@@ -3354,6 +3478,10 @@ class EnterpriseSQLCopilot:
         confidence_band = self._confidence_band(confidence)
         selected_tables = sorted(self._plan_tables(plan))
         selected_column_names = [f"{table}.{column}" for table, column in selected_columns]
+        join_path = [
+            f"{rel.from_table}.{rel.from_column} -> {rel.to_table}.{rel.to_column}"
+            for rel in joins
+        ]
         runtime_metrics = {
             "request_id": request_id,
             "session_id": "local",
@@ -3409,7 +3537,7 @@ class EnterpriseSQLCopilot:
             entities=asdict(entities),
             selected_tables=selected_tables,
             selected_columns=selected_column_names,
-            join_path=[],
+            join_path=join_path,
             plan=asdict(plan),
             optimizations=self.optimization_agent.analyze(sql, plan),
             confidence_breakdown=confidence_breakdown,
@@ -3442,7 +3570,7 @@ class EnterpriseSQLCopilot:
                 "plan": result.plan,
                 "selected_tables": selected_tables,
                 "selected_columns": selected_column_names,
-                "join_path": [],
+                "join_path": join_path,
                 "confidence_breakdown": confidence_breakdown,
                 "confidence_evidence": confidence_evidence,
                 "coverage_report": coverage,
@@ -3868,6 +3996,17 @@ class EnterpriseSQLCopilot:
         )
         if custody_customer_result is not None:
             return custody_customer_result
+        business_rule = parse_business_operations_rule(query, self.graph.tables)
+        business_result = self._run_custody_customer_logic(
+            query,
+            request_id,
+            run_started_at,
+            execution_trace,
+            allow_cache=allow_cache,
+            rule=business_rule,
+        )
+        if business_result is not None:
+            return business_result
         if allow_cache:
             cached = self.cache.get(query)
             if cached:
