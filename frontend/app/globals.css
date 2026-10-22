@@ -72,6 +72,13 @@ body {
   backdrop-filter: blur(22px);
 }
 
+.app-sidebar {
+  background:
+    linear-gradient(180deg, rgba(8, 16, 34, 0.98), rgba(2, 8, 23, 0.97)),
+    hsl(var(--background));
+  box-shadow: 18px 0 48px rgba(2, 6, 23, 0.2);
+}
+
 .light body {
   background:
     radial-gradient(circle at 8% -8%, rgba(34, 211, 238, 0.14), transparent 28rem),
@@ -99,6 +106,12 @@ body {
 .light .bg-slate-950\/92,
 .light .bg-slate-950\/95 {
   background-color: rgba(255, 255, 255, 0.88);
+}
+
+.light .app-sidebar {
+  border-color: rgba(15, 23, 42, 0.1);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 18px 0 48px rgba(15, 23, 42, 0.06);
 }
 
 .light .text-white { color: #0f172a; }

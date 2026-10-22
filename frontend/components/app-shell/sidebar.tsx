@@ -118,7 +118,7 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
   return (
     <aside
       className={cn(
-        "flex h-full flex-col overflow-hidden border-r border-white/10 bg-white/[0.88] backdrop-blur-xl transition-[width] duration-300 ease-out dark:bg-slate-950/78",
+        "app-sidebar flex h-full flex-col overflow-hidden border-r border-white/10 bg-slate-950/95 text-slate-200 backdrop-blur-xl transition-[width] duration-300 ease-out",
         mobile ? "w-80 max-w-[86vw]" : "hidden lg:flex",
         compact ? "w-20" : "w-72"
       )}
@@ -135,11 +135,11 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
 
         {!compact && (
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold text-slate-950 dark:text-white">
+            <div className="text-sm font-semibold text-white">
               SQL Copilot
             </div>
 
-            <div className="text-xs text-slate-500">
+            <div className="text-xs text-slate-400">
               Enterprise analytics workspace
             </div>
           </div>
@@ -179,11 +179,11 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
                 mobile && setMobileSidebarOpen(false)
               }
               className={cn(
-                "group flex h-10 items-center rounded-md text-sm text-slate-600 transition dark:text-slate-400",
-                "hover:bg-slate-900/[0.06] hover:text-slate-950 dark:hover:bg-white/10 dark:hover:text-white",
+                "group flex h-10 items-center rounded-md text-sm text-slate-300 transition",
+                "hover:bg-white/10 hover:text-white",
                 compact ? "justify-center px-0" : "gap-3 px-3",
                 active &&
-                  "bg-cyan-300/15 text-cyan-700 ring-1 ring-cyan-300/20 dark:text-cyan-100"
+                  "bg-cyan-300/15 text-cyan-100 ring-1 ring-cyan-300/20"
               )}
               aria-label={item.label}
               title={compact ? item.label : undefined}

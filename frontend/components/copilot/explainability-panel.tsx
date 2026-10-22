@@ -39,8 +39,18 @@ export function ExplainabilityPanel({ response }: { response?: CopilotResponse }
         </section>
 
         <section>
+          <SectionLabel>Answer workflow</SectionLabel>
+          <ol className="overflow-hidden rounded-xl border border-white/10 bg-white/[0.035] px-3">
+            <WorkflowStep icon={<Sparkles className="h-3.5 w-3.5" />} title="Understand the request" detail="Clarify the business question and desired outcome." />
+            <WorkflowStep icon={<Database className="h-3.5 w-3.5" />} title="Match relevant data" detail={tables.length ? "Relevant business data was selected." : "Use the available business data."} />
+            <WorkflowStep icon={<ShieldCheck className="h-3.5 w-3.5" />} title="Review the SQL" detail={insights?.valid ? "Safety and structure checks completed." : "Review is required before use."} />
+            <WorkflowStep icon={<CheckCircle2 className="h-3.5 w-3.5" />} title="Prepare the answer" detail={insights?.cache_hit ? "A matching saved answer was used." : "A reviewed answer is ready."} last />
+          </ol>
+        </section>
+
+        <section>
           <SectionLabel>Agent scorecard</SectionLabel>
-          <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-1 2xl:grid-cols-3">
+          <div className="grid grid-cols-3 gap-2">
             <ScoreCard icon={<Sparkles className="h-4 w-4" />} label="Planning" value={plannerScore} />
             <ScoreCard icon={<ShieldCheck className="h-4 w-4" />} label="Validation" value={validationScore} />
             <ScoreCard icon={<Database className="h-4 w-4" />} label="Data fit" value={coverageScore} />
@@ -73,9 +83,17 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 }
 
 function ScoreCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: number }) {
-  return <div className="rounded-xl border border-white/10 bg-white/[0.035] p-3"><div className="flex items-center justify-between gap-2 text-slate-500"><span className="flex items-center gap-1.5 text-xs">{icon}{label}</span><span className="font-semibold text-slate-700 dark:text-slate-200">{value}%</span></div><Progress className="mt-2 h-1.5" value={value} /></div>;
+  return <div className="min-w-0 rounded-xl border border-white/10 bg-white/[0.035] p-2.5"><div className="flex min-w-0 items-start justify-between gap-1.5 text-slate-500"><span className="flex min-w-0 items-center gap-1 text-[11px] leading-4"><span className="shrink-0">{icon}</span><span className="min-w-0 break-words">{label}</span></span><span className="shrink-0 text-xs font-semibold text-slate-700 dark:text-slate-200">{value}%</span></div><Progress className="mt-2 h-1.5" value={value} /></div>;
 }
 
 function Detail({ label, value, icon }: { label: string; value: string; icon?: React.ReactNode }) {
   return <div className="min-w-0 rounded-xl border border-white/10 bg-white/[0.035] p-3"><div className="text-[10px] font-medium uppercase tracking-[0.1em] text-slate-500">{label}</div><div className="mt-1 flex items-center gap-1.5 truncate text-sm font-medium text-slate-950 dark:text-white">{icon}{value}</div></div>;
+}
+
+function WorkflowStep({ icon, title, detail, last = false }: { icon: React.ReactNode; title: string; detail: string; last?: boolean }) {
+  return <li className="relative grid grid-cols-[1.75rem_minmax(0,1fr)] gap-2 py-3 first:pt-3 last:pb-3">
+    {!last ? <span className="absolute bottom-0 left-[0.875rem] top-9 w-px bg-cyan-300/20" /> : null}
+    <span className="relative z-10 flex h-7 w-7 items-center justify-center rounded-full border border-cyan-300/20 bg-cyan-300/10 text-cyan-200">{icon}</span>
+    <span className="min-w-0"><span className="block text-xs font-semibold text-slate-800 dark:text-slate-100">{title}</span><span className="mt-0.5 block text-xs leading-4 text-slate-500">{detail}</span></span>
+  </li>;
 }
