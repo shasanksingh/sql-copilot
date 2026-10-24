@@ -26,7 +26,12 @@ const API_PREFIXES = [
 ];
 
 function isApiRequest(pathname: string) {
-  return API_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(prefix));
+  return API_PREFIXES.some((prefix) => {
+    if (pathname === prefix) return true;
+    return prefix.endsWith("/")
+      ? pathname.startsWith(prefix)
+      : pathname.startsWith(`${prefix}/`);
+  });
 }
 
 function configuredOrigin(value?: string) {
