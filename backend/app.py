@@ -1841,6 +1841,88 @@ _FORBIDDEN_OPS = [
     "alter", "truncate", "grant", "revoke",
 ]
 
+# The query workspace remains read-only, but people often need to take a
+# reviewed query to a different database engine.  Keep the accepted values in
+# one place so the API can reject an unknown value instead of silently
+# producing a misleading dialect.
+SQL_LANGUAGE_DIALECTS = {
+    "sql": None,
+    "plsql": "oracle",
+    "oracle": "oracle",
+    "postgresql": "postgres",
+    "mysql": "mysql",
+    "sqlserver": "tsql",
+    "sqlite": "sqlite",
+}
+
+
+def _normalise_sql_language(value: object) -> str:
+    language = str(value or "sql").strip().lower().replace("/", "").replace("-", "").replace(" ", "")
+    aliases = {
+        "plsql": "plsql",
+        "postgres": "postgresql",
+        "postgresql": "postgresql",
+        "mssql": "sqlserver",
+        "sqlserver": "sqlserver",
+        "standard": "sql",
+    }
+    language = aliases.get(language, language)
+    return language if language in SQL_LANGUAGE_DIALECTS else "sql"
+
+
+def _is_read_only_statement(sql: str) -> bool:
+    return bool(re.match(r"^\s*(?:select|with)\b", sql, re.IGNORECASE))
+
+
+def _translate_read_only_sql(sql: str, target_language: str) -> tuple[str, str]:
+    """Translate a SELECT/WITH statement without relaxing the read-only policy."""
+    language = _normalise_sql_language(target_language)
+    source = sql.strip()
+    if language == "sql" or not _is_read_only_statement(source):
+        return source, "Standard SQL selected."
+
+    converted = source.rstrip(";")
+    dialect = SQL_LANGUAGE_DIALECTS[language]
+    if sqlglot is not None and dialect:
+        try:
+            converted = sqlglot.transpile(converted, write=dialect)[0].rstrip(";")
+        except Exception as exc:
+            log_step(f"[sql-language] Translation to {language} used the reviewed SQL: {exc}")
+
+    if language == "plsql":
+        indented = "\n".join(f"    {line}" for line in converted.splitlines())
+        return (
+            "DECLARE\n"
+            "  CURSOR result_cursor IS\n"
+            f"{indented};\n"
+            "BEGIN\n"
+            "  FOR result_row IN result_cursor LOOP\n"
+            "    NULL;\n"
+            "  END LOOP;\n"
+            "END;\n"
+            "/",
+            "Converted the reviewed read-only statement to an Oracle PL/SQL cursor block.",
+        )
+
+    return f"{converted};", f"Converted the reviewed statement to {language.upper()} syntax."
+
+
+def _apply_target_language(response: dict[str, object], target_language: str) -> dict[str, object]:
+    """Attach dialect metadata and translate only an approved read-only query."""
+    language = _normalise_sql_language(target_language)
+    result = dict(response)
+    insights = dict(result.get("insights") or {})
+    sql = str(result.get("sql") or "")
+    if bool(insights.get("valid")) and _is_read_only_statement(sql):
+        translated, note = _translate_read_only_sql(sql, language)
+        result["sql"] = translated
+        insights["target_language"] = language
+        insights["language_conversion"] = note
+    else:
+        insights["target_language"] = "sql"
+    result["insights"] = insights
+    return result
+
 
 def validate_sql(sql: str) -> tuple[bool, str]:
     sql_lower = sql.lower().strip()
@@ -1914,6 +1996,184 @@ def validate_sql(sql: str) -> tuple[bool, str]:
         log_step("[deps] sqlglot missing; using table-only SQL validation")
 
     return True, "Valid"
+
+
+def _repair_issue(kind: str, title: str, detail: str, severity: str, fix: str = "") -> dict[str, str]:
+    issue = {
+        "kind": kind,
+        "title": title,
+        "detail": detail,
+        "severity": severity,
+    }
+    if fix:
+        issue["fix"] = fix
+    return issue
+
+
+def _strip_sql_fence(statement: str) -> str:
+    cleaned = statement.strip()
+    if cleaned.startswith("```") and cleaned.endswith("```"):
+        cleaned = re.sub(r"^```(?:sql|plsql|postgresql|mysql|oracle|tsql)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    return cleaned
+
+
+def _connection_diagnostics(error_text: str) -> list[dict[str, str]]:
+    text = error_text.lower()
+    if not text:
+        return []
+
+    diagnostics: list[dict[str, str]] = []
+    port_match = re.search(r"(?:port\s*|:)(\d{2,5})\b", error_text, flags=re.IGNORECASE)
+    port_note = f" on port {port_match.group(1)}" if port_match else ""
+
+    if any(marker in text for marker in ("tns-12541", "no listener", "listener refused", "ora-12541")):
+        diagnostics.append(_repair_issue(
+            "connection",
+            "Oracle listener is unavailable",
+            f"The database listener did not accept the requested Oracle connection{port_note}.",
+            "error",
+            "Confirm the listener is running, then verify the host, service name, and port in the connection string.",
+        ))
+    elif any(marker in text for marker in ("connection refused", "econnrefused", "actively refused")):
+        diagnostics.append(_repair_issue(
+            "connection",
+            "Database port refused the connection",
+            f"The target host rejected the TCP connection{port_note}.",
+            "error",
+            "Verify the database service is running and that the firewall, security group, and database port allow this client.",
+        ))
+    elif any(marker in text for marker in ("timed out", "timeout", "etimedout", "connection reset")):
+        diagnostics.append(_repair_issue(
+            "connection",
+            "Database connection timed out",
+            "The database host did not complete the connection in time.",
+            "warning",
+            "Check the host name, route or VPN, firewall rules, and whether the database accepts remote connections.",
+        ))
+    elif any(marker in text for marker in ("could not translate host", "enotfound", "name or service not known", "unknown host")):
+        diagnostics.append(_repair_issue(
+            "connection",
+            "Database host name could not be resolved",
+            "The supplied database host cannot be found through DNS.",
+            "error",
+            "Check the host name, DNS suffix, or use the correct private network DNS name.",
+        ))
+    elif any(marker in text for marker in ("password authentication failed", "access denied", "login failed", "invalid username/password", "ora-01017")):
+        diagnostics.append(_repair_issue(
+            "authentication",
+            "Database credentials were rejected",
+            "The database reached the server but did not accept the supplied account credentials.",
+            "error",
+            "Verify the user name, password, authentication method, and that the account is not locked or expired.",
+        ))
+    elif any(marker in text for marker in ("database does not exist", "unknown database", "invalid service name", "ora-12514")):
+        diagnostics.append(_repair_issue(
+            "connection",
+            "Database or service name was not found",
+            "The server is reachable, but the requested database or service identifier is not available.",
+            "error",
+            "Check the database name, SID/service name, and the connection URL for the selected engine.",
+        ))
+    else:
+        diagnostics.append(_repair_issue(
+            "connection",
+            "Connection error needs environment review",
+            "The supplied message does not match a known connection pattern.",
+            "warning",
+            "Verify the connection URL, credentials, database service status, DNS, port, and network access in that order.",
+        ))
+    return diagnostics
+
+
+def repair_sql_statement(statement: str, error_message: str = "", target_language: str = "sql") -> dict[str, object]:
+    """Return safe syntax repair guidance without opening a customer database connection."""
+    language = _normalise_sql_language(target_language)
+    original = _strip_sql_fence(str(statement or ""))
+    supplied_error = str(error_message or "").strip()
+    issues: list[dict[str, str]] = []
+
+    if not original:
+        return {
+            "language": language,
+            "valid": False,
+            "safe_to_run": False,
+            "original_sql": "",
+            "corrected_sql": "",
+            "validation": "Paste a SQL statement to check it.",
+            "issues": [_repair_issue("syntax", "No SQL provided", "A statement is required before it can be checked.", "error")],
+            "connection_diagnostics": _connection_diagnostics(supplied_error),
+        }
+
+    corrected = original
+    repair_rules = [
+        (r"\bselec\b", "SELECT", "Corrected the SELECT keyword."),
+        (r"\bform\b", "FROM", "Corrected the FROM keyword."),
+        (r"\bwere\b", "WHERE", "Corrected the WHERE keyword."),
+        (r",\s*(FROM\b)", r" \1", "Removed the trailing comma before FROM."),
+        (r"(?<![<>=!])==(?!=)", "=", "Replaced a non-SQL equality operator."),
+    ]
+    for pattern, replacement, detail in repair_rules:
+        candidate, count = re.subn(pattern, replacement, corrected, flags=re.IGNORECASE)
+        if count:
+            corrected = candidate
+            issues.append(_repair_issue("syntax", "Common syntax issue corrected", detail, "warning"))
+
+    if re.match(r"^(?:select|with)\b", corrected, flags=re.IGNORECASE) and not corrected.rstrip().endswith(";"):
+        corrected = f"{corrected.rstrip()};"
+        issues.append(_repair_issue("format", "Statement terminator added", "Added a semicolon to complete the statement.", "info"))
+
+    if language == "plsql" and _is_read_only_statement(corrected):
+        corrected, conversion_note = _translate_read_only_sql(corrected, language)
+        issues.append(_repair_issue("language", "Converted to PL/SQL", conversion_note, "info"))
+    elif language not in {"sql", "plsql"} and _is_read_only_statement(corrected):
+        translated, conversion_note = _translate_read_only_sql(corrected, language)
+        if translated != corrected:
+            corrected = translated
+            issues.append(_repair_issue("language", "Converted SQL dialect", conversion_note, "info"))
+
+    read_only = _is_read_only_statement(corrected) or bool(re.match(r"^\s*declare\b", corrected, re.IGNORECASE))
+    if re.search(r"\b(?:delete|drop|update|insert|alter|truncate|grant|revoke|merge)\b", corrected, re.IGNORECASE):
+        issues.append(_repair_issue(
+            "safety",
+            "Write operation detected",
+            "This workspace only reviews read-only statements and will not approve a modifying statement for execution.",
+            "error",
+            "Use a non-production environment and follow your change-control process for write operations.",
+        ))
+        read_only = False
+
+    syntax_valid = False
+    validation = ""
+    if language == "plsql" and re.match(r"^\s*declare\b", corrected, re.IGNORECASE):
+        syntax_valid = bool(re.search(r"\bBEGIN\b", corrected, re.IGNORECASE) and re.search(r"\bEND;\s*/?\s*$", corrected, re.IGNORECASE))
+        validation = "PL/SQL block structure is complete." if syntax_valid else "The PL/SQL block is missing BEGIN or END."
+    elif sqlglot is not None:
+        try:
+            dialect = SQL_LANGUAGE_DIALECTS.get(language)
+            sqlglot.parse_one(corrected.rstrip(";"), read=dialect)
+            syntax_valid = True
+            validation = "Syntax parsed successfully."
+        except Exception as exc:
+            validation = f"Syntax issue: {exc}"
+            issues.append(_repair_issue("syntax", "SQL parser could not validate the statement", str(exc), "error"))
+    else:
+        syntax_valid = bool(re.match(r"^\s*(?:select|with)\b", corrected, re.IGNORECASE))
+        validation = "Basic read-only SQL check completed." if syntax_valid else "The statement must begin with SELECT or WITH."
+
+    if supplied_error:
+        issues.append(_repair_issue("reported_error", "Reported database error", supplied_error[:800], "info"))
+
+    return {
+        "language": language,
+        "valid": bool(syntax_valid and read_only),
+        "safe_to_run": bool(syntax_valid and read_only),
+        "original_sql": original,
+        "corrected_sql": corrected,
+        "validation": validation,
+        "issues": issues,
+        "connection_diagnostics": _connection_diagnostics(supplied_error),
+    }
 
 
  
@@ -3565,11 +3825,12 @@ def generate_sql(
     user_query: str,
     chat_session: SQLChatSession,
     max_retries: int = MAX_RETRIES,
+    target_language: str = "sql",
 ) -> dict[str, object]:
     intent = classify_query(user_query)
     if intent == "DANGEROUS":
         sql = "Only SELECT queries are supported. Write/delete operations are blocked."
-        return {
+        return _apply_target_language({
             "sql": sql,
             "insights": {
                 "confidence": 0,
@@ -3585,10 +3846,10 @@ def generate_sql(
                 "has_limit": False,
                 "summary": "Write/delete operation blocked",
             },
-        }
+        }, target_language)
     if intent == "META":
         sql = "-- Registered schema catalog\n" + "-- Tables: " + ", ".join(sorted(schema_tables))
-        return {
+        return _apply_target_language({
             "sql": sql,
             "insights": {
                 "confidence": 0,
@@ -3606,15 +3867,16 @@ def generate_sql(
                 "has_limit": False,
                 "summary": "Schema metadata response",
             },
-        }
+        }, target_language)
 
     normalised = rewrite_query(user_query)
     result = get_enterprise_copilot().run(normalised or user_query)
     generic_result = _spider_generic_sql_response(user_query, result, max_retries=max_retries)
     if generic_result is not None:
         log_step("[spider-rag] No enterprise schema anchor found; returning generic SQL example")
-        chat_session.add(user_query, str(generic_result["sql"]))
-        return generic_result
+        translated_result = _apply_target_language(generic_result, target_language)
+        chat_session.add(user_query, str(translated_result["sql"]))
+        return translated_result
     sql = result.sql
     provider_label = result.llm_trace.get("provider") or result.provider_status.get("provider") or "local"
     source = "Enterprise deterministic planner"
@@ -3631,8 +3893,7 @@ def generate_sql(
         log_step(f"[enterprise] Clarification options: {result.clarification_options}")
     else:
         log_step(f"[enterprise] SQL: {sql}")
-        chat_session.add(user_query, sql)
-    return {
+    response = {
         "sql": sql,
         "insights": {
             **enterprise_result_to_insights(result),
@@ -3641,6 +3902,10 @@ def generate_sql(
             "max_attempts": max_retries,
         },
     }
+    response = _apply_target_language(response, target_language)
+    if not result.clarification_required:
+        chat_session.add(user_query, str(response["sql"]))
+    return response
 
 
  
@@ -4527,6 +4792,7 @@ def sql_api():
         data = request.get_json(silent=True) or {}
         query = (data.get("query") or "").strip()
         reset = data.get("reset", False)
+        target_language = _normalise_sql_language(data.get("language"))
         user_session = chat_session_for_user(int(g.current_user["id"]))
 
         if reset or query.lower() == "reset":
@@ -4557,7 +4823,7 @@ def sql_api():
 
         log_step("")
         log_step(f"[request] User query: {query}")
-        result = generate_sql(query, user_session)
+        result = generate_sql(query, user_session, target_language=target_language)
         if (
             str(result.get("sql", "")).lower().strip().startswith("select")
             and not result.get("insights", {}).get("generic_sql")
@@ -4567,13 +4833,40 @@ def sql_api():
         return jsonify({
             "query": query,
             "sql": result["sql"],
-            "message": "Your request was reviewed and prepared as read-only SQL.",
+            "message": "Your request was reviewed and prepared as a read-only statement.",
             "insights": result["insights"],
         })
 
     except Exception as exc:
         log_step(f"[error] {exc}")
         return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/sql/repair")
+def sql_repair_api():
+    data = request.get_json(silent=True) or {}
+    statement = str(data.get("statement") or "")
+    error_message = str(data.get("error_message") or "")
+    if len(statement) > 50_000 or len(error_message) > 10_000:
+        return jsonify({"error": "The submitted SQL or error message is too large."}), 413
+
+    result = repair_sql_statement(
+        statement,
+        error_message,
+        _normalise_sql_language(data.get("language")),
+    )
+    auth_store.log(
+        "frontend_logs",
+        "sql_repair_requested",
+        user_id=g.current_user["id"],
+        details={
+            "language": result["language"],
+            "valid": result["valid"],
+            "has_connection_error": bool(error_message.strip()),
+        },
+        ip_address=_client_ip(),
+    )
+    return jsonify(result)
 
 
 METRICS_RANGE_DAYS: dict[str, int | None] = {

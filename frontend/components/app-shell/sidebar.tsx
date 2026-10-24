@@ -15,6 +15,7 @@ import {
   PlayCircle,
   Settings,
   ShieldCheck,
+  Wrench,
   X,
   Zap,
   type LucideIcon
@@ -46,6 +47,12 @@ export const navItems: NavItem[] = [
     label: "SQL Copilot",
     icon: Bot,
     tone: "cyan"
+  },
+  {
+    href: "/sql-repair" as Route,
+    label: "SQL Repair",
+    icon: Wrench,
+    tone: "amber"
   },
   {
     href: "/schema-explorer",

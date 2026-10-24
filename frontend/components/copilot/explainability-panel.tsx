@@ -37,7 +37,7 @@ export function ExplainabilityPanel({ response }: { response?: CopilotResponse }
   const insights = response?.insights;
   const isMetadata = insights?.query_type === "Metadata" || Boolean(insights?.confidence_not_applicable);
   const genericDraft = Boolean(insights?.generic_sql);
-  const isSql = Boolean(response && /^(select|with)\b/i.test(response.sql.trim()) && !isMetadata);
+  const isSql = Boolean(response && /^(select|with|declare)\b/i.test(response.sql.trim()) && !isMetadata);
   const confidence = score(insights?.confidence, 0);
   const plannerScore = score(insights?.planner_confidence ?? insights?.confidence_breakdown?.planner, confidence);
   const validationScore = score(insights?.validator_confidence ?? insights?.confidence_breakdown?.validator, insights?.valid ? 100 : 0);
@@ -64,7 +64,7 @@ export function ExplainabilityPanel({ response }: { response?: CopilotResponse }
     <Card className="flex h-full min-h-0 flex-col overflow-hidden">
       <CardHeader className="shrink-0 border-b border-white/10 pb-4">
         <div className="flex items-start justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-cyan-300/20 bg-cyan-300/10 text-cyan-100"><Sparkles className="h-5 w-5" /></div><div className="min-w-0"><div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-cyan-300">Query review</div><CardTitle className="mt-1">Explainable AI</CardTitle><p className="mt-1 max-w-[18rem] text-sm leading-5 text-slate-500">{isMetadata ? "A clear view of the schema information returned." : "A concise view of the checks behind this response."}</p></div></div>
+          <div className="flex min-w-0 items-center gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-cyan-300/20 bg-cyan-300/10 text-cyan-100"><Sparkles className="h-5 w-5" /></div><div className="min-w-0"><div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-cyan-300">Query review</div><CardTitle className="mt-1">Query review</CardTitle><p className="mt-1 max-w-[18rem] text-sm leading-5 text-slate-500">{isMetadata ? "A clear view of the schema information returned." : "A concise view of the checks behind this response."}</p></div></div>
           <Badge tone={genericDraft ? "amber" : insights?.valid ? "emerald" : "amber"}>{isMetadata ? "Reference" : genericDraft ? "Schema review" : insights?.valid ? "Reviewed" : "Needs review"}</Badge>
         </div>
       </CardHeader>

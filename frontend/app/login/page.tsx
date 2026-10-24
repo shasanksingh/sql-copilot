@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { KeyRound, LoaderCircle, LogIn, Mail } from "lucide-react";
 import { AuthShell } from "@/components/auth/auth-shell";
 import { Button } from "@/components/ui/button";
@@ -23,10 +23,24 @@ function LoginForm() {
   const searchParams = useSearchParams();
   const { setUser } = useAuth();
   const pushToast = useToastStore((state) => state.pushToast);
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(() => searchParams.get("email") ?? "");
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const resetComplete = searchParams.get("reset") === "success";
+    const recoveryEmail = searchParams.get("email");
+    if (recoveryEmail) setEmail(recoveryEmail);
+    if (resetComplete) {
+      pushToast({ title: "Password updated", description: "Sign in with your new password.", variant: "success" });
+      const nextPath = searchParams.get("next");
+      const cleanPath = nextPath?.startsWith("/") && !nextPath.startsWith("//")
+        ? `/login?next=${encodeURIComponent(nextPath)}`
+        : "/login";
+      window.history.replaceState(null, "", cleanPath);
+    }
+  }, [pushToast, searchParams]);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -64,7 +78,7 @@ function LoginForm() {
       <form className="space-y-4" onSubmit={submit}>
         <label className="block">
           <span className="mb-2 block text-sm text-slate-300">Email</span>
-          <div className="relative"><Mail className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-500" /><Input className="pl-9" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} /></div>
+          <div className="relative"><Mail className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-500" /><Input className="pl-9" name="email" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} /></div>
         </label>
         <label className="block">
           <span className="mb-2 block text-sm text-slate-300">Password</span>

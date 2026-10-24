@@ -16,6 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ExplainabilityPanel } from "./explainability-panel";
 import { Badge } from "@/components/ui/badge";
 import type { CopilotResponse, SchemaCatalogColumn, SchemaCatalogTable } from "@/features/api/types";
+import { SQL_LANGUAGES, type SqlLanguage } from "@/lib/sql-language";
 
 const fallbackPrompts = [
   "Show available associates by business unit",
@@ -27,7 +28,7 @@ const fallbackPrompts = [
 ];
 
 function isSqlAnswer(response: CopilotResponse) {
-  return /^(select|with)\b/i.test(response.sql.trim()) && response.insights.query_type !== "Metadata";
+  return /^(select|with|declare)\b/i.test(response.sql.trim()) && response.insights.query_type !== "Metadata";
 }
 
 function humanize(value: string) {
@@ -81,6 +82,7 @@ export function CopilotChat() {
   const [query, setQuery] = useState("");
   const [pendingQuery, setPendingQuery] = useState("");
   const [historyFilter, setHistoryFilter] = useState("");
+  const [language, setLanguage] = useState<SqlLanguage>("sql");
   const [mobileReview, setMobileReview] = useState<CopilotResponse | null>(null);
   const scrollAnchorRef = useRef<HTMLDivElement>(null);
   const history = useCopilotStore((state) => state.history);
@@ -135,7 +137,7 @@ export function CopilotChat() {
   }, [activeResponse, history, schemaQuery.data]);
 
   const mutation = useMutation({
-    mutationFn: generateSql,
+    mutationFn: ({ value, targetLanguage }: { value: string; targetLanguage: SqlLanguage }) => generateSql(value, targetLanguage),
     onSuccess: (response) => {
       addResponse(response);
       setPendingQuery("");
@@ -156,8 +158,8 @@ export function CopilotChat() {
     if (!text || mutation.isPending) return;
     setQuery("");
     setPendingQuery(text);
-    mutation.mutate(text);
-  }, [mutation, query]);
+    mutation.mutate({ value: text, targetLanguage: language });
+  }, [language, mutation, query]);
 
   useEffect(() => {
     submitRef.current = submit;
@@ -232,6 +234,7 @@ export function CopilotChat() {
                           {item.insights.generic_sql ? "Draft SQL" : isSqlAnswer(item) ? (item.insights.valid ? "Reviewed SQL" : "Needs review") : "Schema reference"}
                         </Badge>
                         {isSqlAnswer(item) ? <Badge tone="indigo">{item.insights.generic_sql ? `${item.insights.confidence}% draft confidence` : `${item.insights.confidence}% confidence`}</Badge> : <Badge tone="slate">No SQL generated</Badge>}
+                        {item.insights.target_language && item.insights.target_language !== "sql" ? <Badge tone="cyan">{SQL_LANGUAGES.find((option) => option.value === item.insights.target_language)?.label ?? item.insights.target_language}</Badge> : null}
                         {item.insights.cache_hit ? <Badge tone="cyan">Saved answer</Badge> : null}
                         {(item.insights.repair_attempts ?? 0) > 0 ? <Badge tone="amber">{item.insights.repair_attempts} refinement{item.insights.repair_attempts === 1 ? "" : "s"}</Badge> : null}
                       </div>
@@ -248,7 +251,7 @@ export function CopilotChat() {
                       </div>
                     </div>
                     <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-cyan-300/20 bg-cyan-300/10 p-2 xl:hidden">
-                      <div className="min-w-0"><div className="text-xs font-semibold text-cyan-100">Explain this answer</div><div className="text-[11px] text-slate-400">Scores, checks, and workflow</div></div>
+                      <div className="min-w-0"><div className="text-xs font-semibold text-cyan-100">Review this answer</div><div className="text-[11px] text-slate-400">Scores, checks, and workflow</div></div>
                       <Button variant="outline" className="h-8 shrink-0 px-2.5 text-xs" onClick={() => setMobileReview(item)}>
                         <Sparkles className="h-3.5 w-3.5" />
                         View review
@@ -308,6 +311,16 @@ export function CopilotChat() {
             <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2 text-xs text-slate-500">{voice.isListening ? "Voice stays on until you stop it. Completed speech sends automatically." : "Speak or type a business question"}</div>
               <div className="flex items-center gap-2">
+                <label className="sr-only" htmlFor="copilot-language">SQL language</label>
+                <select
+                  id="copilot-language"
+                  value={language}
+                  onChange={(event) => setLanguage(event.target.value as SqlLanguage)}
+                  className="h-10 max-w-36 rounded-md border border-slate-300 bg-white px-2.5 text-xs font-medium text-slate-800 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-300/30 dark:border-white/15 dark:bg-slate-950 dark:text-slate-100"
+                  aria-label="SQL language"
+                >
+                  {SQL_LANGUAGES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
                 <Button
                   type="button"
                   variant="outline"
@@ -324,7 +337,7 @@ export function CopilotChat() {
                 </Button>
                 <Button onClick={() => submit()} disabled={mutation.isPending}>
                 <Send className="h-4 w-4" />
-                {mutation.isPending ? "Generating" : "Generate SQL"}
+                {mutation.isPending ? "Generating" : language === "plsql" ? "Generate PL/SQL" : "Generate SQL"}
                 </Button>
               </div>
             </div>
@@ -343,10 +356,10 @@ export function CopilotChat() {
       <AnimatePresence>
         {mobileReview ? (
           <motion.div className="fixed inset-0 z-50 xl:hidden" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <button className="absolute inset-0 bg-slate-950/75 backdrop-blur-sm" onClick={() => setMobileReview(null)} aria-label="Close Explainable AI review" />
-            <motion.section role="dialog" aria-modal="true" aria-label="Explainable AI review" className="absolute inset-x-0 bottom-0 flex h-[88dvh] flex-col overflow-hidden rounded-t-3xl border border-white/10 bg-slate-950 shadow-2xl" initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 28, stiffness: 300 }}>
+            <button className="absolute inset-0 bg-slate-950/75 backdrop-blur-sm" onClick={() => setMobileReview(null)} aria-label="Close query review" />
+            <motion.section role="dialog" aria-modal="true" aria-label="Query review" className="absolute inset-x-0 bottom-0 flex h-[88dvh] flex-col overflow-hidden rounded-t-3xl border border-white/10 bg-slate-950 shadow-2xl" initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 28, stiffness: 300 }}>
               <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-3">
-                <div><div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-cyan-300">Answer review</div><div className="mt-0.5 text-sm font-semibold text-white">Explainable AI</div></div>
+                <div><div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-cyan-300">Answer review</div><div className="mt-0.5 text-sm font-semibold text-white">Query review</div></div>
                 <Button variant="ghost" className="h-8 w-8 px-0" onClick={() => setMobileReview(null)} aria-label="Close review"><X className="h-4 w-4" /></Button>
               </div>
               <div className="min-h-0 flex-1 p-3"><ExplainabilityPanel response={mobileReview} /></div>
@@ -370,7 +383,8 @@ function Message({ icon, tone, children }: { icon: React.ReactNode; tone: "user"
 const SQL_KEYWORDS = new Set([
   "SELECT", "FROM", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "ON", "WHERE", "GROUP", "BY",
   "ORDER", "HAVING", "LIMIT", "AS", "AND", "OR", "CASE", "WHEN", "THEN", "ELSE", "END",
-  "SUM", "COUNT", "AVG", "MIN", "MAX", "DATE_TRUNC", "OVER", "PARTITION", "DESC", "ASC"
+  "SUM", "COUNT", "AVG", "MIN", "MAX", "DATE_TRUNC", "OVER", "PARTITION", "DESC", "ASC",
+  "DECLARE", "CURSOR", "IS", "BEGIN", "LOOP", "NULL"
 ]);
 
 const SQL_TOKEN_PATTERN = /(--[^\n]*|'(?:''|[^'])*'|\b[A-Z_]+\b|\b\d+(?:\.\d+)?\b)/gi;

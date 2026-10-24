@@ -19,8 +19,10 @@ import type {
   ConfigureProviderResponse,
   RuntimeConfigResponse,
   ConfigureEmailPayload,
-  ConfigureEmailResponse
+  ConfigureEmailResponse,
+  SqlRepairResponse
 } from "./types";
+import type { SqlLanguage } from "@/lib/sql-language";
 
 const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "");
 
@@ -113,10 +115,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function generateSql(query: string) {
+export function generateSql(query: string, language: SqlLanguage = "sql") {
   return request<CopilotResponse>("/sql", {
     method: "POST",
-    body: JSON.stringify({ query })
+    body: JSON.stringify({ query, language })
+  });
+}
+
+export function repairSql(payload: { statement: string; errorMessage?: string; language: SqlLanguage }) {
+  return request<SqlRepairResponse>("/sql/repair", {
+    method: "POST",
+    body: JSON.stringify({
+      statement: payload.statement,
+      error_message: payload.errorMessage ?? "",
+      language: payload.language
+    })
   });
 }
 

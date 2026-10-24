@@ -10,6 +10,7 @@ import {
   PlayCircle,
   Settings,
   ShieldCheck,
+  Wrench,
   Zap,
   type LucideIcon
 } from "lucide-react";
@@ -20,6 +21,7 @@ import { cn } from "@/lib/utils";
 const pageIconMap: Record<string, { icon: LucideIcon; tone: Icon3DTone }> = {
   Dashboard: { icon: LayoutDashboard, tone: "cyan" },
   "SQL Copilot": { icon: Bot, tone: "cyan" },
+  "SQL Repair": { icon: Wrench, tone: "amber" },
   "Schema Explorer": { icon: Database, tone: "indigo" },
   "Schema Graph": { icon: GitBranch, tone: "cyan" },
   "Data Model Studio": { icon: Network, tone: "indigo" },

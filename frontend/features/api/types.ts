@@ -1,3 +1,5 @@
+import type { SqlLanguage } from "@/lib/sql-language";
+
 export type CopilotInsights = {
   confidence: number;
   threshold: number;
@@ -50,6 +52,8 @@ export type CopilotInsights = {
   spider_examples?: Array<Record<string, unknown>>;
   confidence_not_applicable?: boolean;
   execution_requires_approval?: boolean;
+  target_language?: SqlLanguage;
+  language_conversion?: string;
 };
 
 export type ConfidenceEvidenceItem = {
@@ -204,6 +208,25 @@ export type AuthUser = {
   last_login?: string | null;
   is_active: boolean;
   has_security_question?: boolean;
+};
+
+export type SqlRepairIssue = {
+  kind: string;
+  title: string;
+  detail: string;
+  severity: "info" | "warning" | "error" | string;
+  fix?: string;
+};
+
+export type SqlRepairResponse = {
+  language: SqlLanguage;
+  valid: boolean;
+  safe_to_run: boolean;
+  original_sql: string;
+  corrected_sql: string;
+  validation: string;
+  issues: SqlRepairIssue[];
+  connection_diagnostics: SqlRepairIssue[];
 };
 
 export type AuthResponse = {

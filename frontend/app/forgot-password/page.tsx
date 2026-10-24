@@ -27,7 +27,7 @@ export default function ForgotPasswordPage() {
         setQuestion(response.security_question);
         pushToast({ title: "Security question ready", description: "Answer it to choose a new password.", variant: "success" });
       } else if (response.reset_token) {
-        router.replace(`/reset-password?token=${encodeURIComponent(response.reset_token)}`);
+        router.replace(`/reset-password?token=${encodeURIComponent(response.reset_token)}&email=${encodeURIComponent(email.trim())}`);
       }
     } catch (error) {
       const apiError = error instanceof ApiError ? error : undefined;
