@@ -36,6 +36,7 @@ function eventDetail(event: Record<string, unknown> | undefined, fallback: strin
 export function ExplainabilityPanel({ response }: { response?: CopilotResponse }) {
   const insights = response?.insights;
   const isMetadata = insights?.query_type === "Metadata" || Boolean(insights?.confidence_not_applicable);
+  const genericDraft = Boolean(insights?.generic_sql);
   const isSql = Boolean(response && /^(select|with)\b/i.test(response.sql.trim()) && !isMetadata);
   const confidence = score(insights?.confidence, 0);
   const plannerScore = score(insights?.planner_confidence ?? insights?.confidence_breakdown?.planner, confidence);
@@ -55,8 +56,8 @@ export function ExplainabilityPanel({ response }: { response?: CopilotResponse }
     { stage: "03", title: "Schema Linking Agent", detail: eventDetail(linkingEvent, tables.length ? `Matched ${tables.slice(0, 3).map(businessName).join(", ")}.` : isMetadata ? "Retrieved the registered schema catalog." : "No registered schema match was required for this response."), icon: <Database className="h-3.5 w-3.5" /> },
     { stage: "04", title: "Query Planning Agent", detail: eventDetail(planningEvent, isSql ? "Prepared a read-only plan with the matched business data." : "Prepared a non-executable information response."), icon: <Gauge className="h-3.5 w-3.5" /> },
     { stage: "05", title: "SQL Generation Agent", detail: eventDetail(generationEvent, isSql ? (insights?.cache_hit ? "Reused a matching reviewed SQL result." : "Generated a read-only SQL statement.") : "Returned the requested schema information without SQL."), icon: <Sparkles className="h-3.5 w-3.5" /> },
-    { stage: "06", title: "SQL Validation & Refinement Agent", detail: !isSql ? "No SQL validation was needed for this information response." : retries ? `${retries} repair ${retries === 1 ? "pass was" : "passes were"} completed before review.` : eventDetail(validationEvent, insights?.valid ? "Validated the first SQL draft; no repair pass was required." : "Validation found items that require review."), icon: <RefreshCw className="h-3.5 w-3.5" /> },
-    { stage: "07", title: "Response Delivery Agent", detail: insights?.cache_hit ? "Delivered the matching saved response." : isSql && insights?.execution_requires_approval ? "Prepared the reviewed SQL for human approval before execution." : "Prepared the response for review." , icon: <CheckCircle2 className="h-3.5 w-3.5" /> },
+    { stage: "06", title: "SQL Validation & Refinement Agent", detail: !isSql ? "No SQL validation was needed for this information response." : genericDraft ? "Checked that the draft is read-only; target-schema validation is still required." : retries ? `${retries} repair ${retries === 1 ? "pass was" : "passes were"} completed before review.` : eventDetail(validationEvent, insights?.valid ? "Validated the first SQL draft; no repair pass was required." : "Validation found items that require review."), icon: <RefreshCw className="h-3.5 w-3.5" /> },
+    { stage: "07", title: "Response Delivery Agent", detail: insights?.cache_hit ? "Delivered the matching saved response." : genericDraft ? "Delivered a draft that requires target-schema review." : isSql && insights?.execution_requires_approval ? "Prepared the reviewed SQL for human approval before execution." : "Prepared the response for review." , icon: <CheckCircle2 className="h-3.5 w-3.5" /> },
   ];
 
   return (
@@ -64,7 +65,7 @@ export function ExplainabilityPanel({ response }: { response?: CopilotResponse }
       <CardHeader className="shrink-0 border-b border-white/10 pb-4">
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-cyan-300/20 bg-cyan-300/10 text-cyan-100"><Sparkles className="h-5 w-5" /></div><div className="min-w-0"><div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-cyan-300">Query review</div><CardTitle className="mt-1">Explainable AI</CardTitle><p className="mt-1 max-w-[18rem] text-sm leading-5 text-slate-500">{isMetadata ? "A clear view of the schema information returned." : "A concise view of the checks behind this response."}</p></div></div>
-          <Badge tone={insights?.valid ? "emerald" : "amber"}>{isMetadata ? "Reference" : insights?.valid ? "Reviewed" : "Needs review"}</Badge>
+          <Badge tone={genericDraft ? "amber" : insights?.valid ? "emerald" : "amber"}>{isMetadata ? "Reference" : genericDraft ? "Schema review" : insights?.valid ? "Reviewed" : "Needs review"}</Badge>
         </div>
       </CardHeader>
       <CardContent className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-y-auto p-4 touch-pan-y scrollbar-thin">
@@ -85,7 +86,7 @@ export function ExplainabilityPanel({ response }: { response?: CopilotResponse }
           <SectionLabel>Request details</SectionLabel>
           <div className="grid grid-cols-2 gap-2">
             <Detail label="Request" value={insights?.query_type ?? "Query"} />
-            <Detail label="Safety" value={isSql ? (insights?.valid ? "Reviewed" : "Review required") : "Not applicable"} />
+            <Detail label="Safety" value={isSql ? (genericDraft ? "Schema review" : insights?.valid ? "Reviewed" : "Review required") : "Not applicable"} />
             <Detail label="Refinements" value={retries ? String(retries) : isSql ? "First pass" : "Not applicable"} icon={<RefreshCw className="h-3.5 w-3.5" />} />
             <Detail label="Response" value={insights?.cache_hit ? "Saved answer" : "New answer"} icon={insights?.cache_hit ? <Clock3 className="h-3.5 w-3.5" /> : undefined} />
           </div>
@@ -93,7 +94,7 @@ export function ExplainabilityPanel({ response }: { response?: CopilotResponse }
 
         <section><SectionLabel>Data used</SectionLabel>{tables.length ? <div className="flex flex-wrap gap-2">{tables.slice(0, 8).map((table) => <Badge key={table} tone="slate">{businessName(table)}</Badge>)}</div> : <div className="rounded-xl border border-dashed border-white/10 p-3 text-sm text-slate-500">No registered data source was needed for this response.</div>}</section>
 
-        {insights?.validation ? <div className={`flex gap-2 rounded-xl border p-3 text-sm leading-5 ${insights.valid ? "border-emerald-300/20 bg-emerald-300/10 text-emerald-100" : "border-amber-300/20 bg-amber-300/10 text-amber-100"}`}>{insights.valid ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" /> : <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />}<span>{insights.validation}</span></div> : null}
+        {insights?.validation ? <div className={`flex gap-2 rounded-xl border p-3 text-sm leading-5 ${insights.valid && !genericDraft ? "border-emerald-300/20 bg-emerald-300/10 text-emerald-100" : "border-amber-300/20 bg-amber-300/10 text-amber-100"}`}>{insights.valid && !genericDraft ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" /> : <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />}<span>{insights.validation}</span></div> : null}
       </CardContent>
     </Card>
   );
