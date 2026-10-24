@@ -48,6 +48,8 @@ export type CopilotInsights = {
   generic_mode?: string;
   generic_warning?: string;
   spider_examples?: Array<Record<string, unknown>>;
+  confidence_not_applicable?: boolean;
+  execution_requires_approval?: boolean;
 };
 
 export type ConfidenceEvidenceItem = {

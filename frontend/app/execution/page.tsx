@@ -1,6 +1,6 @@
 "use client";
 
-import { Download, FileSpreadsheet, Play } from "lucide-react";
+import { Download, FileSpreadsheet, Play, ShieldCheck } from "lucide-react";
 import { useMemo, useState } from "react";
 import { AppShell } from "@/components/app-shell/app-shell";
 import { PageHeader } from "@/components/app-shell/page-header";
@@ -16,6 +16,7 @@ export default function ExecutionPage() {
   const activeSql = useCopilotStore((state) => state.activeResponse?.sql);
   const [sql, setSql] = useState(activeSql || "SELECT\n  p.project_name,\n  p.status\nFROM projects p\nWHERE LOWER(p.status) = 'active';");
   const [hasRun, setHasRun] = useState(false);
+  const [approved, setApproved] = useState(false);
   const pushToast = useToastStore((state) => state.pushToast);
   const columns = useMemo(() => Object.keys(sampleRows[0]), []);
 
@@ -33,18 +34,22 @@ export default function ExecutionPage() {
 
   return (
     <AppShell>
-      <PageHeader title="Query Execution" description="Review SQL, run validated queries, inspect result grids, and export analysis-ready files." />
+      <PageHeader title="Query Execution" description="Review SQL and explicitly approve a read-only preview before inspecting result grids or exporting files." />
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between gap-3">
             <CardTitle>SQL Editor</CardTitle>
-            <Badge tone="cyan">Read-only safe mode</Badge>
+            <Badge tone="cyan"><ShieldCheck className="h-3.5 w-3.5" />Read-only safe mode</Badge>
           </CardHeader>
           <CardContent>
             <Textarea className="min-h-72" value={sql} onChange={(event) => setSql(event.target.value)} />
+            <label className="mt-4 flex cursor-pointer items-start gap-2 rounded-lg border border-amber-300/20 bg-amber-300/10 p-3 text-sm text-amber-100">
+              <input type="checkbox" checked={approved} onChange={(event) => setApproved(event.target.checked)} className="mt-0.5 h-4 w-4 accent-cyan-400" />
+              <span><span className="font-semibold">Human approval required.</span> I have reviewed this read-only SQL. The current screen shows a safe preview only; no connected database is run automatically.</span>
+            </label>
             <div className="mt-4 flex flex-wrap gap-2">
-              <Button onClick={() => { setHasRun(true); pushToast({ title: "Query executed in preview mode", description: "Wire a backend execution endpoint to run against a live DB.", variant: "success" }); }}>
-                <Play className="h-4 w-4" />Run query
+              <Button disabled={!approved} onClick={() => { setHasRun(true); pushToast({ title: "Approved preview ready", description: "No connected database was executed.", variant: "success" }); }}>
+                <Play className="h-4 w-4" />Approve preview
               </Button>
               <Button variant="outline" onClick={() => exportRows("csv")}><Download className="h-4 w-4" />Export CSV</Button>
               <Button variant="outline" onClick={() => exportRows("excel")}><FileSpreadsheet className="h-4 w-4" />Export Excel</Button>

@@ -118,7 +118,7 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
   return (
     <aside
       className={cn(
-        "app-sidebar flex h-full flex-col overflow-hidden border-r border-white/10 bg-slate-950/95 text-slate-200 backdrop-blur-xl transition-[width] duration-300 ease-out",
+        "app-sidebar relative z-40 flex h-full flex-col overflow-visible border-r border-white/10 bg-slate-950/95 text-slate-200 backdrop-blur-xl transition-[width] duration-300 ease-out",
         mobile ? "w-80 max-w-[86vw]" : "hidden lg:flex",
         compact ? "w-20" : "w-72"
       )}
@@ -167,7 +167,7 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
         )}
       </div>
 
-      <nav className={cn("min-h-0 flex-1 space-y-1 overflow-y-auto scrollbar-thin", compact ? "p-2" : "p-3")}>
+      <nav className={cn("min-h-0 flex-1 space-y-1 overflow-x-visible overflow-y-auto scrollbar-thin", compact ? "p-2" : "p-3")}>
         {navItems.filter((item) => !item.admin || user?.role === "admin").map((item) => {
           const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
 
@@ -179,8 +179,8 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
                 mobile && setMobileSidebarOpen(false)
               }
               className={cn(
-                "group flex h-10 items-center rounded-md text-sm text-slate-300 transition",
-                "hover:bg-white/10 hover:text-white",
+                "group relative flex h-10 items-center rounded-md text-sm text-slate-300 transition",
+                "hover:bg-cyan-300/15 hover:text-cyan-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/60",
                 compact ? "justify-center px-0" : "gap-3 px-3",
                 active &&
                   "bg-cyan-300/15 text-cyan-100 ring-1 ring-cyan-300/20"
@@ -195,6 +195,7 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
                   {item.label}
                 </span>
               )}
+              {compact ? <span className="pointer-events-none absolute left-[calc(100%+0.6rem)] z-50 hidden whitespace-nowrap rounded-md border border-cyan-300/20 bg-slate-950 px-2.5 py-1.5 text-xs font-medium text-cyan-50 shadow-xl group-hover:block group-focus-visible:block">{item.label}</span> : null}
             </Link>
           );
         })}

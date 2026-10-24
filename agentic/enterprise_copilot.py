@@ -42,7 +42,7 @@ except ImportError:  # pragma: no cover
 
 
 TokenSet = set[str]
-QUERY_CACHE_VERSION = "enterprise-v10"
+QUERY_CACHE_VERSION = "enterprise-v11"
 
 
 def _tokens(text: str) -> list[str]:
@@ -3273,7 +3273,7 @@ class EnterpriseSQLCopilot:
             self._record_provider_fallback(reason)
         return trace, confidence
 
-    def _run_custody_customer_logic(
+    def _run_business_rule(
         self,
         query: str,
         request_id: str,
@@ -3283,7 +3283,6 @@ class EnterpriseSQLCopilot:
         allow_cache: bool,
         rule: dict[str, object] | None = None,
     ) -> CopilotResult | None:
-        rule = rule or self._parse_custody_customer_rule(query)
         if rule is None:
             return None
 
@@ -3978,10 +3977,8 @@ class EnterpriseSQLCopilot:
             "events": [],
             "counters": {},
         }
-        # Cache lookup must run before the specialised semantic domains.  Those
-        # domains cache their reviewed results too, and checking only after
-        # them caused repeated custody/business questions to call the reviewer
-        # again unnecessarily.
+        # Cache lookup runs before specialised business rules so repeated
+        # reviewed requests return immediately without another model call.
         if allow_cache:
             cached = self.cache.get(query)
             if cached:
@@ -3998,26 +3995,8 @@ class EnterpriseSQLCopilot:
                     "workflow_engine": workflow_run.get("engine", self.workflow.engine),
                 }
                 return cached
-        custody_result = self._run_custody_balance_logic(
-            query,
-            request_id,
-            run_started_at,
-            execution_trace,
-            allow_cache=allow_cache,
-        )
-        if custody_result is not None:
-            return custody_result
-        custody_customer_result = self._run_custody_customer_logic(
-            query,
-            request_id,
-            run_started_at,
-            execution_trace,
-            allow_cache=allow_cache,
-        )
-        if custody_customer_result is not None:
-            return custody_customer_result
         business_rule = parse_business_operations_rule(query, self.graph.tables)
-        business_result = self._run_custody_customer_logic(
+        business_result = self._run_business_rule(
             query,
             request_id,
             run_started_at,

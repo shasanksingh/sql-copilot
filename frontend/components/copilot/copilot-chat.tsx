@@ -4,7 +4,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
 import { Bot, Clock, Copy, Download, Mic, Search, Send, Sparkles, Square, Trash2, UserRound, X } from "lucide-react";
 import type React from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { generateSql, getSchemaCatalog } from "@/features/api/client";
 import { useCopilotStore } from "@/features/store/use-copilot-store";
 import { useToastStore } from "@/features/store/use-toast-store";
@@ -18,12 +18,17 @@ import { Badge } from "@/components/ui/badge";
 import type { CopilotResponse, SchemaCatalogColumn, SchemaCatalogTable } from "@/features/api/types";
 
 const fallbackPrompts = [
-  "Show custody positions for each customer",
+  "Show available associates by business unit",
+  "Active associate assignments by project",
   "Customers with unpaid invoices",
   "Headcount by department",
   "Open work assigned to employees",
-  "Custody movements by portfolio this month"
+  "Delivery hours by project this month"
 ];
+
+function isSqlAnswer(response: CopilotResponse) {
+  return /^(select|with)\b/i.test(response.sql.trim()) && response.insights.query_type !== "Metadata";
+}
 
 function humanize(value: string) {
   return value
@@ -85,12 +90,12 @@ export function CopilotChat() {
   const deleteResponse = useCopilotStore((state) => state.deleteResponse);
   const clearHistory = useCopilotStore((state) => state.clearHistory);
   const pushToast = useToastStore((state) => state.pushToast);
+  const submitRef = useRef<(value: string) => void>(() => undefined);
   const schemaQuery = useQuery({
     queryKey: ["schema-catalog", "copilot-prompts"],
     queryFn: getSchemaCatalog,
     staleTime: 60_000
   });
-  const voice = useSpeechRecognition(setQuery);
   const filteredHistory = useMemo(() => {
     const term = historyFilter.trim().toLowerCase();
     return history
@@ -146,13 +151,22 @@ export function CopilotChat() {
     }
   });
 
-  const submit = (value = query) => {
+  const submit = useCallback((value = query) => {
     const text = value.trim();
-    if (!text) return;
+    if (!text || mutation.isPending) return;
     setQuery("");
     setPendingQuery(text);
     mutation.mutate(text);
-  };
+  }, [mutation, query]);
+
+  useEffect(() => {
+    submitRef.current = submit;
+  }, [submit]);
+
+  const voice = useSpeechRecognition({
+    onTranscript: setQuery,
+    onFinal: (spoken) => submitRef.current(spoken),
+  });
 
   useEffect(() => {
     scrollAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -180,8 +194,8 @@ export function CopilotChat() {
   };
 
   return (
-    <div className={activeResponse ? "grid min-h-0 gap-3 xl:h-[calc(100dvh-10.75rem)] xl:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_390px]" : "grid min-h-0 gap-3 xl:h-[calc(100dvh-10.75rem)]"}>
-      <Card className="flex min-h-[680px] min-w-0 flex-col overflow-hidden xl:h-full xl:min-h-0">
+    <div className={activeResponse ? "grid min-w-0 gap-3 xl:h-[calc(100dvh-10.75rem)] xl:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_390px]" : "grid min-w-0 gap-3 xl:h-[calc(100dvh-10.75rem)]"}>
+      <Card className="flex min-h-0 min-w-0 flex-col overflow-visible xl:h-full xl:overflow-hidden">
         <CardHeader className="flex shrink-0 flex-col gap-2 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:px-4">
           <div className="flex flex-wrap items-center gap-2">
             <CardTitle>Conversation</CardTitle>
@@ -206,7 +220,7 @@ export function CopilotChat() {
           </div>
         </CardHeader>
         <CardContent className="flex min-h-0 flex-1 flex-col p-0">
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-2.5 py-3 sm:px-3 scrollbar-thin">
+          <div className="min-h-[240px] max-h-[52dvh] flex-none space-y-3 overflow-y-auto overscroll-y-auto px-2.5 py-3 touch-pan-y sm:px-3 xl:min-h-0 xl:max-h-none xl:flex-1 xl:overscroll-contain scrollbar-thin">
             <AnimatePresence>
               {filteredHistory.map(({ item, index }) => (
                 <motion.div key={`${index}-${item.query}-${item.insights.confidence}`} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-2">
@@ -215,9 +229,9 @@ export function CopilotChat() {
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                       <div className="flex flex-wrap gap-2">
                         <Badge tone={item.insights.valid ? "emerald" : "amber"}>
-                          {item.insights.valid ? "Reviewed SQL" : "Needs review"}
+                          {isSqlAnswer(item) ? (item.insights.valid ? "Reviewed SQL" : "Needs review") : "Schema reference"}
                         </Badge>
-                        <Badge tone="indigo">{item.insights.confidence}% confidence</Badge>
+                        {isSqlAnswer(item) ? <Badge tone="indigo">{item.insights.confidence}% confidence</Badge> : <Badge tone="slate">No SQL generated</Badge>}
                         {item.insights.cache_hit ? <Badge tone="cyan">Saved answer</Badge> : null}
                         {(item.insights.repair_attempts ?? 0) > 0 ? <Badge tone="amber">{item.insights.repair_attempts} refinement{item.insights.repair_attempts === 1 ? "" : "s"}</Badge> : null}
                       </div>
@@ -241,6 +255,7 @@ export function CopilotChat() {
                       </Button>
                     </div>
                     <SqlBlock sql={item.sql} />
+                    {isSqlAnswer(item) && item.insights.execution_requires_approval ? <div className="mt-2 rounded-md border border-amber-300/20 bg-amber-300/10 px-3 py-2 text-xs text-amber-100">Human approval is required before this SQL can run against a connected database.</div> : null}
                     {index === history.length - 1 && suggestions.length ? <div className="mt-3 border-t border-white/10 pt-3 xl:hidden"><div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Recommended next questions</div><div className="flex max-w-full gap-2 overflow-x-auto pb-1 scrollbar-thin">{suggestions.slice(0, 4).map((suggestion) => <Button key={suggestion} variant="outline" className="h-8 shrink-0 px-2.5 text-xs" onClick={() => submit(suggestion)} disabled={mutation.isPending}>{suggestion}</Button>)}</div></div> : null}
                   </Message>
                 </motion.div>
@@ -268,7 +283,7 @@ export function CopilotChat() {
             )}
             <div ref={scrollAnchorRef} />
           </div>
-          <div className="shrink-0 border-t border-white/10 bg-slate-950/92 p-2.5 backdrop-blur-xl">
+          <div className="sticky bottom-0 shrink-0 border-t border-white/10 bg-slate-950/92 p-2.5 backdrop-blur-xl">
             <div className="mb-1.5 flex max-w-full gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
               {suggestions.map((item) => (
                 <Button key={item} variant="outline" className="h-7 shrink-0 px-2.5 text-xs" onClick={() => submit(item)} disabled={mutation.isPending}>
@@ -278,7 +293,7 @@ export function CopilotChat() {
               ))}
             </div>
             <Textarea
-              className="max-h-32 min-h-[76px] resize-y break-words p-3 text-sm leading-5"
+              className="max-h-40 min-h-[92px] resize-y break-words p-3 text-sm leading-5"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => {
@@ -290,7 +305,7 @@ export function CopilotChat() {
               placeholder="Ask for SQL in natural language"
             />
             <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2 text-xs text-slate-500">Speak or type a business question</div>
+              <div className="flex items-center gap-2 text-xs text-slate-500">{voice.isListening ? "Voice stays on until you stop it. Completed speech sends automatically." : "Speak or type a business question"}</div>
               <div className="flex items-center gap-2">
                 <Button
                   type="button"
@@ -362,7 +377,7 @@ const SQL_TOKEN_PATTERN = /(--[^\n]*|'(?:''|[^'])*'|\b[A-Z_]+\b|\b\d+(?:\.\d+)?\
 function SqlBlock({ sql }: { sql: string }) {
   const parts = sql.split(SQL_TOKEN_PATTERN).filter((part) => part.length > 0);
   return (
-    <pre className="max-h-[56dvh] min-h-48 overflow-auto rounded-md bg-slate-950/70 p-3 font-mono text-sm leading-6 text-cyan-50 scrollbar-thin">
+    <pre className="min-h-32 max-h-[36dvh] overflow-auto rounded-md bg-slate-950/70 p-3 font-mono text-sm leading-6 text-cyan-50 sm:min-h-40 xl:min-h-48 xl:max-h-[56dvh] scrollbar-thin">
       <code className="whitespace-pre-wrap break-words">
         {parts.map((part, index) => {
           const upper = part.toUpperCase();

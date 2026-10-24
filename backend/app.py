@@ -15,14 +15,14 @@ from threading import Lock, Timer
 
 import pandas as pd
 from flask import Flask, g, jsonify, make_response, request, send_from_directory
-from agentic.custody_balance_domain import (
-    CUSTODY_BALANCE_ALIASES,
-    CUSTODY_BALANCE_COLUMN_HINTS,
-    CUSTODY_BALANCE_DEFAULT_DISPLAY_COLUMNS,
-    CUSTODY_BALANCE_LABEL_COLUMNS,
-    CUSTODY_BALANCE_RELATIONSHIPS,
-    CUSTODY_BALANCE_SCHEMA_TABLES,
-    CUSTODY_BALANCE_TABLE_HINTS,
+from agentic.associate_operations_domain import (
+    ASSOCIATE_OPERATIONS_ALIASES,
+    ASSOCIATE_OPERATIONS_COLUMN_HINTS,
+    ASSOCIATE_OPERATIONS_DEFAULT_DISPLAY_COLUMNS,
+    ASSOCIATE_OPERATIONS_LABEL_COLUMNS,
+    ASSOCIATE_OPERATIONS_RELATIONSHIPS,
+    ASSOCIATE_OPERATIONS_SCHEMA_TABLES,
+    ASSOCIATE_OPERATIONS_TABLE_HINTS,
 )
 from agentic.enterprise_copilot import EnterpriseSQLCopilot
 try:
@@ -1346,12 +1346,12 @@ def _register_builtin_schema_table(payload: dict[str, object]) -> dict[str, obje
     return schema_catalog_entry(table)
 
 
-def register_custody_balance_schema() -> int:
+def register_associate_operations_schema() -> int:
     loaded = 0
-    for table_payload in CUSTODY_BALANCE_SCHEMA_TABLES:
+    for table_payload in ASSOCIATE_OPERATIONS_SCHEMA_TABLES:
         if _register_builtin_schema_table(table_payload):
             loaded += 1
-    for relationship in CUSTODY_BALANCE_RELATIONSHIPS:
+    for relationship in ASSOCIATE_OPERATIONS_RELATIONSHIPS:
         parsed = _relationship_payload(relationship, str(relationship.get("from_table") or ""))
         if not parsed:
             continue
@@ -1418,9 +1418,9 @@ if inferred_fk_count:
 loaded_dynamic_count = _load_dynamic_schema()
 if loaded_dynamic_count:
     log_step(f"[schema] Loaded {loaded_dynamic_count} dynamic schema tables")
-builtin_custody_count = register_custody_balance_schema()
-if builtin_custody_count:
-    log_step(f"[schema] Registered {builtin_custody_count} custody balance schema tables")
+builtin_associate_count = register_associate_operations_schema()
+if builtin_associate_count:
+    log_step(f"[schema] Registered {builtin_associate_count} associate operations schema tables")
 
 log_step(f"[schema] {len(schema_tables)} tables | {len(column_documents)} columns")
 
@@ -2312,9 +2312,9 @@ PRIMARY_LABEL_COLUMNS = {
     "sprints": "sprint_name",
     "deployments": "version",
 }
-TABLE_ALIASES.update(CUSTODY_BALANCE_ALIASES)
-DEFAULT_DISPLAY_COLUMNS.update(CUSTODY_BALANCE_DEFAULT_DISPLAY_COLUMNS)
-PRIMARY_LABEL_COLUMNS.update(CUSTODY_BALANCE_LABEL_COLUMNS)
+TABLE_ALIASES.update(ASSOCIATE_OPERATIONS_ALIASES)
+DEFAULT_DISPLAY_COLUMNS.update(ASSOCIATE_OPERATIONS_DEFAULT_DISPLAY_COLUMNS)
+PRIMARY_LABEL_COLUMNS.update(ASSOCIATE_OPERATIONS_LABEL_COLUMNS)
 
 COLUMN_QUERY_HINTS = {
     "employees": {
@@ -2422,9 +2422,9 @@ COLUMN_QUERY_HINTS = {
     },
 }
 
-for table, hints in CUSTODY_BALANCE_TABLE_HINTS.items():
+for table, hints in ASSOCIATE_OPERATIONS_TABLE_HINTS.items():
     TABLE_QUERY_HINTS.setdefault(table, set()).update(hints)
-for table, columns in CUSTODY_BALANCE_COLUMN_HINTS.items():
+for table, columns in ASSOCIATE_OPERATIONS_COLUMN_HINTS.items():
     COLUMN_QUERY_HINTS.setdefault(table, {})
     for column, hints in columns.items():
         COLUMN_QUERY_HINTS[table].setdefault(column, set()).update(hints)
@@ -2512,14 +2512,11 @@ VALUE_FILTERS = {
         },
     },
 }
-VALUE_FILTERS["custody_block"] = {
-    "block_status": {
-        "active": "ACTIVE",
-        "released": "RELEASED",
-        "cancelled": "CANCELLED",
-        "canceled": "CANCELLED",
-        "expired": "EXPIRED",
-    }
+VALUE_FILTERS["associate_assignments"] = {
+    "assignment_status": {"active": "active", "planned": "planned", "completed": "completed"},
+}
+VALUE_FILTERS["associate_availability"] = {
+    "availability_status": {"available": "available", "allocated": "allocated", "leave": "leave"},
 }
 
 DATE_ORDER_COLUMNS = {
@@ -2534,10 +2531,10 @@ DATE_ORDER_COLUMNS = {
     "deployments": "deployed_at",
 }
 DATE_ORDER_COLUMNS.update({
-    "portfolio": "created_datetime",
-    "custody_position": "last_carry_forward_date",
-    "security_movement": "trade_date",
-    "custody_block": "block_valid_from_date",
+    "associates": "start_date",
+    "associate_assignments": "assigned_at",
+    "associate_activity": "activity_date",
+    "associate_availability": "available_from",
 })
 
 
@@ -3301,6 +3298,7 @@ def enterprise_result_to_insights(result) -> dict[str, object]:
         "fallback_reason": fallback_reason,
         "repair_attempts": int(result.llm_trace.get("retry_count") or 0),
         "cache_hit": result.cache_hit,
+        "execution_requires_approval": bool(result.valid and not result.clarification_required),
     }
 
 
@@ -3414,7 +3412,9 @@ def _spider_generic_sql_response(
     sql = str(answer["sql"])
     llm_trace = dict(answer.get("llm_trace") or {})
     examples = list(answer.get("examples") or [])
-    model_confidence = float(answer.get("confidence") or 0.0)
+    # A generic answer is useful as a drafting aid, but it has no registered
+    # schema proof.  Never present it as a fully validated 100% result.
+    model_confidence = min(80.0, float(answer.get("confidence") or 0.0))
     tables = _sql_tables(sql)
     execution_trace = {
         "workflow": {
@@ -3548,6 +3548,7 @@ def _spider_generic_sql_response(
             "fallback_reason": _friendly_llm_fallback_reason(llm_trace),
             "repair_attempts": int(llm_trace.get("retry_count") or 0),
             "cache_hit": False,
+            "execution_requires_approval": True,
             "generic_sql": True,
             "generic_mode": "spider_text_sql_rag",
             "generic_warning": "This SQL is illustrative. Register or connect the target schema before executing it against a real database.",
@@ -3586,11 +3587,11 @@ def generate_sql(
             },
         }
     if intent == "META":
-        sql = f"Available tables: {', '.join(sorted(schema_tables))}"
+        sql = "-- Registered schema catalog\n" + "-- Tables: " + ", ".join(sorted(schema_tables))
         return {
             "sql": sql,
             "insights": {
-                "confidence": 100,
+                "confidence": 0,
                 "threshold": CONFIDENCE_THRESHOLD,
                 "valid": True,
                 "validation": "Schema metadata response",
@@ -3600,6 +3601,8 @@ def generate_sql(
                 "tables": sorted(schema_tables),
                 "columns": [],
                 "query_type": "Metadata",
+                "confidence_not_applicable": True,
+                "execution_requires_approval": False,
                 "has_limit": False,
                 "summary": "Schema metadata response",
             },

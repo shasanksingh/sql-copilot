@@ -47,6 +47,7 @@ node_modules/
 frontend/node_modules/
 frontend/.next/
 frontend/.next-build/
+*.tsbuildinfo
 frontend/out/
 frontend/.vercel/
 frontend/playwright-report/

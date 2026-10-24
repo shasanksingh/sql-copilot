@@ -39,7 +39,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="workspace-shell h-dvh overflow-hidden">
+    <div className="workspace-shell min-h-dvh lg:h-dvh lg:overflow-hidden">
       <div className="fixed inset-y-0 left-0 z-30 hidden lg:block">
         <Sidebar />
       </div>
@@ -55,12 +55,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </AnimatePresence>
       <div
         className={cn(
-          "flex h-dvh min-w-0 flex-1 flex-col transition-[padding-left] duration-300 ease-out",
+          "flex min-h-dvh min-w-0 flex-1 flex-col lg:h-dvh transition-[padding-left] duration-300 ease-out",
           collapsed ? "lg:pl-20" : "lg:pl-72"
         )}
       >
         <Topbar />
-        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain p-3 sm:p-4 md:p-6">{children}</main>
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-y-auto p-3 touch-pan-y sm:p-4 md:p-6 lg:overscroll-contain">{children}</main>
       </div>
       <CommandPalette />
     </div>

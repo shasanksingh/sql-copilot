@@ -37,6 +37,11 @@ body {
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
 
+@media (max-width: 1023px) {
+  html, body { overflow-y: auto; overscroll-behavior-y: auto; }
+  .workspace-shell { min-height: 100dvh; height: auto; overflow: visible; }
+}
+
 ::selection { background: rgba(34, 211, 238, 0.32); color: white; }
 
 .workspace-shell {
