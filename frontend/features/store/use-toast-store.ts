@@ -15,11 +15,16 @@ type ToastState = {
   dismissToast: (id: string) => void;
 };
 
-export const useToastStore = create<ToastState>((set) => ({
+export const useToastStore = create<ToastState>((set, get) => ({
   toasts: [],
-  pushToast: (toast) =>
+  pushToast: (toast) => {
+    const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     set((state) => ({
-      toasts: [{ ...toast, id: crypto.randomUUID() }, ...state.toasts].slice(0, 4)
-    })),
+      toasts: [{ ...toast, id }, ...state.toasts].slice(0, 4)
+    }));
+    if (typeof window !== "undefined") {
+      window.setTimeout(() => get().dismissToast(id), 5_000);
+    }
+  },
   dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) }))
 }));

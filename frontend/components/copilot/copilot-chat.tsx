@@ -259,7 +259,6 @@ export function CopilotChat() {
                     </div>
                     <SqlBlock sql={item.sql} />
                     {item.insights.generic_sql ? <div className="mt-2 rounded-md border border-amber-300/20 bg-amber-300/10 px-3 py-2 text-xs text-amber-100">This is a generic SQL draft. Connect or register the target schema before it can be treated as reviewed SQL.</div> : null}
-                    {isSqlAnswer(item) && item.insights.execution_requires_approval ? <div className="mt-2 rounded-md border border-amber-300/20 bg-amber-300/10 px-3 py-2 text-xs text-amber-100">Human approval is required before this SQL can run against a connected database.</div> : null}
                     {index === history.length - 1 && suggestions.length ? <div className="mt-3 border-t border-white/10 pt-3 xl:hidden"><div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Recommended next questions</div><div className="flex max-w-full gap-2 overflow-x-auto pb-1 scrollbar-thin">{suggestions.slice(0, 4).map((suggestion) => <Button key={suggestion} variant="outline" className="h-8 shrink-0 px-2.5 text-xs" onClick={() => submit(suggestion)} disabled={mutation.isPending}>{suggestion}</Button>)}</div></div> : null}
                   </Message>
                 </motion.div>

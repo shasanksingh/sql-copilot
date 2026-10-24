@@ -3558,7 +3558,7 @@ def enterprise_result_to_insights(result) -> dict[str, object]:
         "fallback_reason": fallback_reason,
         "repair_attempts": int(result.llm_trace.get("retry_count") or 0),
         "cache_hit": result.cache_hit,
-        "execution_requires_approval": bool(result.valid and not result.clarification_required),
+        "execution_requires_approval": False,
     }
 
 
@@ -3808,7 +3808,7 @@ def _spider_generic_sql_response(
             "fallback_reason": _friendly_llm_fallback_reason(llm_trace),
             "repair_attempts": int(llm_trace.get("retry_count") or 0),
             "cache_hit": False,
-            "execution_requires_approval": True,
+            "execution_requires_approval": False,
             "generic_sql": True,
             "generic_mode": "spider_text_sql_rag",
             "generic_warning": "This SQL is illustrative. Register or connect the target schema before executing it against a real database.",
