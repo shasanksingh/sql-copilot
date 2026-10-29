@@ -714,6 +714,14 @@ class QueryPlannerAgent:
                 table_scores[table] += 60
             elif query_terms & table_terms:
                 table_scores[table] += 20
+        # A directly named entity (for example, "employee" or "customer")
+        # must lead the plan.  Without this priority, a foreign-key column
+        # such as tasks.assigned_to can accidentally outrank the table the
+        # person actually asked about.
+        explicit_base = self._resolve_base_table(query, entities)
+        if explicit_base and explicit_base in self.graph.tables:
+            table_scores.setdefault(explicit_base, 0)
+            table_scores[explicit_base] += 250
         main_table = max(table_scores.items(), key=lambda item: item[1])[0]
         selected_tables = {main_table}
         relationship_terms = {
