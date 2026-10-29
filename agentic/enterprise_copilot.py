@@ -42,7 +42,7 @@ except ImportError:  # pragma: no cover
 
 
 TokenSet = set[str]
-QUERY_CACHE_VERSION = "enterprise-v11"
+QUERY_CACHE_VERSION = "enterprise-v12"
 
 
 def _tokens(text: str) -> list[str]:
@@ -353,7 +353,10 @@ class QueryCacheLayer:
             )
 
     def _key(self, query: str) -> str:
-        return f"{QUERY_CACHE_VERSION}:{self.namespace}:{query.strip().lower()}"
+        # Equivalent requests should use the same cached reviewed result even
+        # when a user pastes them with different whitespace.
+        normalised = re.sub(r"\s+", " ", query).strip().lower()
+        return f"{QUERY_CACHE_VERSION}:{self.namespace}:{normalised}"
 
 
 class SchemaGraphEngine:
@@ -554,8 +557,57 @@ class EntityExtractionAgent:
                 for phrase, value in values.items():
                     if re.search(rf"(?<!\w){re.escape(phrase.replace('_', ' '))}(?!\w)", q):
                         filters.append({"table": table, "column": column, "operator": "=", "value": value})
+        filters.extend(self._contextual_text_filters(query, raw, filters))
         measures = [term for term in canonical if term in {"salary", "amount", "budget", "hours", "revenue"}]
         return EntityExtraction(raw, canonical, [], [], measures, filters, [])
+
+    @staticmethod
+    def _contextual_text_filters(
+        query: str,
+        raw_terms: list[str],
+        existing_filters: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        """Capture a named value even when it is not in the example value list.
+
+        Example data can never contain every real department or business unit.  A
+        request such as "employee details working in TCS" still has a clear
+        schema anchor (employees.department), so it should produce a safe
+        read-only query rather than be rejected merely because "TCS" was not
+        preconfigured as an example value.
+        """
+        text = re.sub(r"\s+", " ", query.strip())
+        lowered_terms = set(raw_terms)
+        employee_context = bool(
+            lowered_terms & {"employee", "employees", "staff", "worker", "workers"}
+        )
+        associate_context = bool(
+            lowered_terms & {"associate", "associates", "consultant", "consultants"}
+        )
+        if not (employee_context or associate_context):
+            return []
+
+        match = re.search(
+            r"\b(?:working|work|employed)\s+(?:in|at|for|with)\s+(?:the\s+)?"
+            r"(?P<value>[A-Za-z0-9][A-Za-z0-9& .'-]{0,79}?)(?=$|[?.!,;]|\s+(?:with|where|who|that|and|by|from|on|during|this|last)\b)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return []
+
+        value = re.sub(r"\s+", " ", match.group("value")).strip(" .,'\"")
+        if len(value) < 2 or value.lower() in {"the", "a", "an", "company", "organization"}:
+            return []
+        table, column = (
+            ("associates", "business_unit")
+            if associate_context and not employee_context
+            else ("employees", "department")
+        )
+        if any(item.get("table") == table and item.get("column") == column for item in existing_filters):
+            return []
+        return [{"table": table, "column": column, "operator": "=", "value": value.lower()}]
+
+
 class SchemaLinkingEngine:
     def __init__(
         self,
@@ -1577,9 +1629,10 @@ class SQLGenerationAgent:
                     end = f"{start} + INTERVAL '{interval}'"
                 filters.append(f"{alias}.{column} >= {start} AND {alias}.{column} < {end}")
             else:
+                value = str(item.get("value", "")).lower().replace("'", "''")
                 filters.append(
                     f"LOWER({alias}.{item['column']}) {item.get('operator', '=')} "
-                    f"'{str(item.get('value', '')).lower()}'"
+                    f"'{value}'"
                 )
         if filters:
             lines.append("WHERE " + " AND ".join(filters))

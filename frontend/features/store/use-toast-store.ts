@@ -7,6 +7,8 @@ export type Toast = {
   title: string;
   description?: string;
   variant?: "default" | "success" | "warning" | "error";
+  /** Optional lifetime in milliseconds. Short-lived progress confirmations should not need manual dismissal. */
+  duration?: number;
 };
 
 type ToastState = {
@@ -23,7 +25,7 @@ export const useToastStore = create<ToastState>((set, get) => ({
       toasts: [{ ...toast, id }, ...state.toasts].slice(0, 4)
     }));
     if (typeof window !== "undefined") {
-      window.setTimeout(() => get().dismissToast(id), 5_000);
+      window.setTimeout(() => get().dismissToast(id), toast.duration ?? 5_000);
     }
   },
   dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) }))

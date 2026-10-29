@@ -144,7 +144,8 @@ export function CopilotChat() {
       pushToast({
         title: response.insights.valid ? "SQL generated" : "Clarification needed",
         description: response.insights.valid ? `Confidence ${response.insights.confidence}%` : response.message,
-        variant: response.insights.valid ? "success" : "warning"
+        variant: response.insights.valid ? "success" : "warning",
+        duration: 3_000
       });
     },
     onError: (error) => {

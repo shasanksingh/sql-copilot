@@ -19,7 +19,20 @@ const securityQuestions = [
 ];
 
 function passwordScore(password: string) {
-  return [password.length >= 8, /[a-z]/.test(password), /[A-Z]/.test(password), /\d/.test(password), /[^A-Za-z0-9]/.test(password)].filter(Boolean).length * 20;
+  if (!password) return 0;
+
+  // Score the actual composition instead of awarding a fixed 20% per rule.
+  // This keeps short or repetitive passwords from looking strong.
+  let score = Math.min(30, password.length * 3);
+  if (/[a-z]/.test(password)) score += 10;
+  if (/[A-Z]/.test(password)) score += 10;
+  if (/\d/.test(password)) score += 10;
+  if (/[^A-Za-z0-9]/.test(password)) score += 15;
+  if (new Set(password).size >= 6) score += 10;
+  if (password.length >= 12) score += 10;
+  if (/(.)\1{2,}/.test(password)) score -= 15;
+
+  return Math.max(0, Math.min(100, score));
 }
 
 export default function SignupPage() {
@@ -39,7 +52,7 @@ export default function SignupPage() {
     event.preventDefault();
     if (name.trim().length < 2) return reject("Enter your full name");
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return reject("Enter a valid email address");
-    if (strength < 80) return reject("Use a stronger password with uppercase, lowercase, and a number");
+    if (strength < 80) return reject("Use a stronger password with uppercase, lowercase, a number, and a symbol");
     if (password !== confirmPassword) return reject("The passwords do not match");
     if (securityAnswer.trim().length < 2) return reject("Answer the security question for account recovery");
     setLoading(true);
