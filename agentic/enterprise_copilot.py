@@ -42,7 +42,7 @@ except ImportError:  # pragma: no cover
 
 
 TokenSet = set[str]
-QUERY_CACHE_VERSION = "enterprise-v12"
+QUERY_CACHE_VERSION = "enterprise-v13"
 
 
 def _tokens(text: str) -> list[str]:
@@ -557,55 +557,8 @@ class EntityExtractionAgent:
                 for phrase, value in values.items():
                     if re.search(rf"(?<!\w){re.escape(phrase.replace('_', ' '))}(?!\w)", q):
                         filters.append({"table": table, "column": column, "operator": "=", "value": value})
-        filters.extend(self._contextual_text_filters(query, raw, filters))
         measures = [term for term in canonical if term in {"salary", "amount", "budget", "hours", "revenue"}]
         return EntityExtraction(raw, canonical, [], [], measures, filters, [])
-
-    @staticmethod
-    def _contextual_text_filters(
-        query: str,
-        raw_terms: list[str],
-        existing_filters: list[dict[str, str]],
-    ) -> list[dict[str, str]]:
-        """Capture a named value even when it is not in the example value list.
-
-        Example data can never contain every real department or business unit.  A
-        request such as "employee details working in TCS" still has a clear
-        schema anchor (employees.department), so it should produce a safe
-        read-only query rather than be rejected merely because "TCS" was not
-        preconfigured as an example value.
-        """
-        text = re.sub(r"\s+", " ", query.strip())
-        lowered_terms = set(raw_terms)
-        employee_context = bool(
-            lowered_terms & {"employee", "employees", "staff", "worker", "workers"}
-        )
-        associate_context = bool(
-            lowered_terms & {"associate", "associates", "consultant", "consultants"}
-        )
-        if not (employee_context or associate_context):
-            return []
-
-        match = re.search(
-            r"\b(?:working|work|employed)\s+(?:in|at|for|with)\s+(?:the\s+)?"
-            r"(?P<value>[A-Za-z0-9][A-Za-z0-9& .'-]{0,79}?)(?=$|[?.!,;]|\s+(?:with|where|who|that|and|by|from|on|during|this|last)\b)",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if not match:
-            return []
-
-        value = re.sub(r"\s+", " ", match.group("value")).strip(" .,'\"")
-        if len(value) < 2 or value.lower() in {"the", "a", "an", "company", "organization"}:
-            return []
-        table, column = (
-            ("associates", "business_unit")
-            if associate_context and not employee_context
-            else ("employees", "department")
-        )
-        if any(item.get("table") == table and item.get("column") == column for item in existing_filters):
-            return []
-        return [{"table": table, "column": column, "operator": "=", "value": value.lower()}]
 
 
 class SchemaLinkingEngine:
@@ -790,6 +743,29 @@ class QueryPlannerAgent:
             elif match.kind == "column" and match.score >= 85 and explicit_table:
                 selected_tables.add(match.table)
 
+        contextual_filters, contextual_unresolved = self._contextual_text_filters(
+            query,
+            main_table,
+            selected_tables,
+            entities.filters,
+        )
+        if contextual_unresolved:
+            return QueryPlan(
+                main_table,
+                [],
+                [],
+                list(entities.filters),
+                [],
+                [],
+                None,
+                intent.limit,
+                25,
+                contextual_unresolved,
+                [],
+            )
+        for item in contextual_filters:
+            selected_tables.add(str(item["table"]))
+
         # discover joins including multi-hop paths for all selected tables
         joins = self.joiner.discover(main_table, selected_tables)
         # ensure join path completion: for any selected_table not present in planned joins, try to append shortest path
@@ -809,6 +785,10 @@ class QueryPlannerAgent:
             item for item in entities.filters
             if item.get("table") in planned_tables
         ]
+        plan_filters.extend(
+            item for item in contextual_filters
+            if item.get("table") in planned_tables
+        )
 
         selected_columns = self._explicit_requested_columns(main_table, entities)
         display_triggers = {"show", "list", "display", "view", "get"}
@@ -880,6 +860,94 @@ class QueryPlannerAgent:
             confidence,
         )
 
+    def _contextual_text_filters(
+        self,
+        query: str,
+        main_table: str,
+        selected_tables: set[str],
+        existing_filters: list[dict[str, str]],
+    ) -> tuple[list[dict[str, str]], list[str]]:
+        """Map a named business value to a compatible text field in the live schema.
+
+        Values are never drawn from a predefined company, customer, or product list.
+        The action in the request determines the field *shape* to look for, while the
+        actual value is preserved exactly as supplied by the user.  If the loaded
+        schema has no suitable field, the request is handed to the generic SQL path
+        instead of silently applying an unrelated filter.
+        """
+        text = re.sub(r"\s+", " ", query.strip())
+        match = re.search(
+            r"\b(?P<verb>working|work|employed|assigned|based|located|purchased|bought|ordered|uses?|using)"
+            r"\s+(?:(?:in|at|for|with|from|by)\s+)?(?:the\s+)?"
+            r"(?P<value>[A-Za-z0-9][A-Za-z0-9& .'-]{0,79}?)(?=$|[?.!,;]|\s+(?:with|where|who|that|and|by|from|on|during|this|last)\b)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return [], []
+
+        value = re.sub(r"\s+", " ", match.group("value")).strip(" .,'\"")
+        if len(value) < 2 or value.lower() in {"the", "a", "an", "company", "organization", "product"}:
+            return [], []
+        verb = match.group("verb").lower()
+        category = "purchase" if verb in {"purchased", "bought", "ordered", "uses", "using"} else "engagement"
+        candidate = self._best_contextual_text_column(main_table, selected_tables, category)
+        if candidate is None:
+            return [], [f"generic_context:{category}:{value.lower()}"]
+        table, column = candidate
+        if any(item.get("table") == table and item.get("column") == column for item in existing_filters):
+            return [], []
+        return [{"table": table, "column": column, "operator": "=", "value": value.lower()}], []
+
+    def _best_contextual_text_column(
+        self,
+        main_table: str,
+        selected_tables: set[str],
+        category: str,
+    ) -> tuple[str, str] | None:
+        field_terms = {
+            "engagement": {
+                "company", "employer", "organization", "client", "business", "unit",
+                "department", "team", "division", "practice", "office", "location",
+            },
+            "purchase": {
+                "product", "item", "catalog", "sku", "order", "purchase", "service",
+                "description", "model", "brand",
+            },
+        }.get(category, set())
+        candidates: list[tuple[int, int, str, str]] = []
+        for table in self.graph.tables:
+            path = [] if table == main_table else self.graph.shortest_join_path(main_table, table)
+            if table != main_table and not path:
+                continue
+            table_terms = _expanded_identifier_terms([table])
+            for column in self.graph.column_order.get(table, []):
+                dtype = str(self.graph.column_types.get(table, {}).get(column, "")).lower()
+                if not any(token in dtype for token in ("char", "text", "string", "varchar")):
+                    continue
+                terms = _expanded_identifier_terms([column]) | table_terms
+                for hint in self.column_hints.get(table, {}).get(column, set()):
+                    terms.update(_expanded_identifier_terms([hint]))
+                overlap = terms & field_terms
+                if not overlap:
+                    continue
+                score = len(overlap) * 30
+                # A compatible field on the explicitly selected entity is safer
+                # than a more distant field reached through several joins.  This
+                # still permits cross-table filters when the primary entity has
+                # no compatible business dimension at all.
+                if table == main_table:
+                    score += 200
+                if column.endswith(("_name", "_title")) and category == "purchase":
+                    score += 5
+                candidates.append((score, -len(path), table, column))
+        if not candidates:
+            return None
+        candidates.sort(reverse=True)
+        _score, _distance, table, column = candidates[0]
+        selected_tables.add(table)
+        return table, column
+
     def _specialized_plan(
         self,
         intent: Intent,
@@ -887,6 +955,98 @@ class QueryPlannerAgent:
         query: str,
     ) -> QueryPlan | None:
         q = query.lower()
+
+        if (
+            intent.time_range
+            and re.search(r"\b(associate|associates|staff|consultant|workforce)\b", q)
+            and re.search(r"\b(available|availability|capacity|bench|workload)\b", q)
+            and self._has_columns(
+                "associate_availability",
+                "associate_id",
+                "available_from",
+                "available_to",
+                "capacity_percent",
+            )
+            and self._has_columns("associates", "associate_id", "associate_name")
+        ):
+            filters = [{
+                "table": "associate_availability",
+                "column": "available_from",
+                "operator": intent.time_range,
+                "value": "",
+            }]
+            return QueryPlan(
+                main_table="associate_availability",
+                selected_columns=[
+                    ("associates", "associate_name"),
+                    ("associates", "role_title"),
+                    ("associates", "business_unit"),
+                    ("associate_availability", "capacity_percent"),
+                    ("associate_availability", "available_from"),
+                    ("associate_availability", "available_to"),
+                ],
+                joins=self.joiner.discover("associate_availability", ["associates"]),
+                filters=filters,
+                aggregations=[],
+                group_by=[],
+                order_by=("associate_availability.available_from", "ASC"),
+                limit=intent.limit,
+                confidence=95,
+                time_table="associate_availability",
+                time_column="available_from",
+            )
+
+        if (
+            re.search(r"\b(headcount|workforce\s+count)\b", q)
+            and self._has_columns("employees", "employee_id", "department")
+        ):
+            return QueryPlan(
+                main_table="employees",
+                selected_columns=[("employees", "department")],
+                joins=[],
+                filters=[],
+                aggregations=[{
+                    "function": "COUNT",
+                    "table": "employees",
+                    "column": "employee_id",
+                    "alias": "headcount",
+                }],
+                group_by=[("employees", "department")],
+                order_by=("headcount", "DESC"),
+                limit=intent.limit,
+                confidence=95,
+            )
+
+        if (
+            re.search(r"\bdelivery\s+hours?\b", q)
+            and self._has_columns("time_logs", "hours_spent", "task_id")
+            and self._has_columns("projects", "project_name")
+        ):
+            joins = self.joiner.discover("time_logs", ["projects"])
+            filters: list[dict[str, str]] = []
+            if intent.time_range and self._has_columns("time_logs", "log_date"):
+                filters.append({
+                    "table": "time_logs",
+                    "column": "log_date",
+                    "operator": intent.time_range,
+                    "value": "",
+                })
+            return QueryPlan(
+                main_table="time_logs",
+                selected_columns=[("projects", "project_name")],
+                joins=joins,
+                filters=filters,
+                aggregations=[{
+                    "function": "SUM",
+                    "table": "time_logs",
+                    "column": "hours_spent",
+                    "alias": "delivery_hours",
+                }],
+                group_by=[("projects", "project_name")],
+                order_by=("delivery_hours", "DESC"),
+                limit=intent.limit,
+                confidence=95,
+            )
 
         if (
             "performer" in q
@@ -1233,7 +1393,18 @@ class QueryPlannerAgent:
         elif re.search(r"\breviewed\s+by\b|\breviewer\b", text):
             add("employees", "full_name", "reviewed_by")
         if re.search(r"\bdepartments?\b|\bdept\b|\bdivision\b", text):
-            add("employees", "department")
+            if base_table == "departments":
+                requested = next(
+                    (
+                        column for column in self.graph.column_order.get(base_table, [])
+                        if column in {"department_id", "id", "department_name"}
+                    ),
+                    None,
+                )
+                if requested:
+                    add(base_table, requested)
+            else:
+                add("employees", "department")
         elif re.search(r"\bemployees?\b|\bstaff\b|\bperformers?\b", text):
             add("employees", "full_name", "employee_id")
         if not has_tier and re.search(r"\bclients?\b|\bcustomers?\b", text):
@@ -1349,6 +1520,7 @@ class QueryPlannerAgent:
         for column in (
             "payment_date", "log_date", "issued_date", "due_date", "end_date",
             "deployed_at", "start_date", "created_at", "joining_date", "assigned_at",
+            "activity_date", "available_from", "available_to", "release_date",
         ):
             if column in self.graph.columns.get(table, set()):
                 return column
@@ -1492,7 +1664,12 @@ class QueryPlannerAgent:
 
         columns: list[str] = []
         label = self.labels.get(table)
-        if label and label in self.graph.columns.get(table, set()):
+        if (
+            label
+            and label in self.graph.columns.get(table, set())
+            and label != "id"
+            and not label.endswith("_id")
+        ):
             columns.append(label)
 
         for item in entities.filters:
@@ -3897,6 +4074,13 @@ class EnterpriseSQLCopilot:
             model_confidence=model_confidence,
         )
         confidence = int(round(confidence_breakdown.get("overall", 0.0)))
+        # A deterministic planner can prove schema alignment, but it cannot
+        # prove that the returned rows answer an unobserved business outcome.
+        # Keep headroom rather than presenting every fully-covered plan as a
+        # literal 100% certainty.
+        if not llm_trace.get("active"):
+            confidence = min(96, confidence)
+            confidence_breakdown["overall"] = confidence
         confidence_band = self._confidence_band(confidence)
         clarification_required = bool(missing_params) or not valid or confidence_band == "LOW"
         options = [f"Provide {item.replace('_', ' ')}." for item in missing_params]
@@ -4297,6 +4481,11 @@ class EnterpriseSQLCopilot:
         )
         self._trace_mark(execution_trace, "confidence_calls", "confidence", stage_started, {"confidence": confidence_breakdown.get("overall", 0.0)})
         confidence = int(round(confidence_breakdown.get("overall", 0.0)))
+        # Schema validation confirms the query shape, not the business result
+        # set. Keep a small, honest margin for deterministic responses.
+        if not llm_trace.get("active"):
+            confidence = min(96, confidence)
+            confidence_breakdown["overall"] = confidence
         confidence_band = self._confidence_band(confidence)
         clarification_required = confidence_band == "LOW" or bool(ambiguities) or bool(unresolved)
         options = ambiguities[:5]

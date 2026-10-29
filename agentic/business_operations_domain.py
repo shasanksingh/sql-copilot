@@ -46,7 +46,16 @@ def parse_business_operations_rule(
 
     wants_available = bool(re.search(r"\b(available|availability|capacity|bench|workload)\b", q))
     mentions_associate = bool(re.search(r"\b(associate|associates|staff|team member|consultant|workforce)\b", q))
-    if wants_available and mentions_associate and {"associates", "associate_availability"}.issubset(tables):
+    needs_time_or_trend_analysis = bool(re.search(
+        r"\b(trend|monthly|weekly|quarterly|this\s+(?:week|month|quarter)|last\s+(?:week|month|quarter)|by\s+(?:day|week|month|quarter)|count|total|sum|average)\b",
+        q,
+    ))
+    if (
+        wants_available
+        and mentions_associate
+        and not needs_time_or_trend_analysis
+        and {"associates", "associate_availability"}.issubset(tables)
+    ):
         return {
             "name": "business_available_associates",
             "domain_label": "Business Operations",

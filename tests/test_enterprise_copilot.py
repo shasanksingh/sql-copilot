@@ -112,12 +112,12 @@ def test_employee_name_and_department_selects_only_requested_columns(tmp_path: P
 
 
 def test_employee_details_with_an_unlisted_business_value_stays_schema_grounded(tmp_path: Path) -> None:
-    result = _copilot(tmp_path).run("Show employee details working in TCS", allow_cache=False)
+    result = _copilot(tmp_path).run("Show employee details working in Northstar Systems", allow_cache=False)
 
     assert result.valid is True
     assert result.clarification_required is False
     assert "FROM employees e" in result.sql
-    assert "LOWER(e.department) = 'tcs'" in result.sql
+    assert "LOWER(e.department) = 'northstar systems'" in result.sql
     assert result.confidence >= 70
 
 

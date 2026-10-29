@@ -37,6 +37,15 @@ def test_available_associates_rule_is_schema_grounded() -> None:
     assert "LOWER(av.availability_status) = 'available'" in str(rule["sql"])
 
 
+def test_time_bounded_availability_uses_the_general_time_planner() -> None:
+    rule = parse_business_operations_rule(
+        "Show associate availability from this month",
+        ALL_TABLES,
+    )
+
+    assert rule is None
+
+
 def test_active_assignment_rule_links_associates_to_projects() -> None:
     rule = parse_business_operations_rule("Show active associate assignments by project", ALL_TABLES)
 

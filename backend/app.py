@@ -3639,9 +3639,18 @@ def _clarification_mentions_known_schema(result) -> bool:
     return False
 
 
+def _has_generic_context_gap(result) -> bool:
+    plan = result.plan or {}
+    unresolved = plan.get("unresolved_terms", []) if isinstance(plan, dict) else []
+    return any(str(item).startswith("generic_context:") for item in unresolved)
+
+
 def _should_use_spider_generic_rag(user_query: str, result) -> bool:
     if not result.clarification_required:
         return False
+    if _has_generic_context_gap(result):
+        rag = get_spider_text_sql_rag()
+        return rag.available and rag.looks_like_text_to_sql(user_query)
     if result.confidence >= CONFIDENCE_THRESHOLD:
         return False
     if _result_has_schema_anchor(result) and _query_mentions_selected_schema(user_query, result):
