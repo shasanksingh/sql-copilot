@@ -103,8 +103,10 @@ def test_generate_sql_uses_spider_only_without_enterprise_schema_anchor(tmp_path
     assert result["sql"].startswith("SELECT")
 
 
-def test_generate_sql_keeps_schema_anchored_low_confidence_as_clarification(monkeypatch) -> None:
+def test_generate_sql_returns_schema_aware_draft_for_unmapped_attribute(tmp_path: Path, monkeypatch) -> None:
     app_module = importlib.import_module("backend.app")
+    csv_path = tmp_path / "spider.csv"
+    _write_spider_csv(csv_path)
 
     fake_result = SimpleNamespace(
         sql="I cannot generate reliable SQL",
@@ -140,11 +142,19 @@ def test_generate_sql_keeps_schema_anchored_low_confidence_as_clarification(monk
     fake_copilot = SimpleNamespace(run=lambda _query: fake_result)
 
     monkeypatch.setattr(app_module, "get_enterprise_copilot", lambda: fake_copilot)
+    monkeypatch.setattr(app_module, "SPIDER_TEXT_SQL_FILE", csv_path)
+    monkeypatch.setattr(app_module, "spider_text_sql_rag", None)
+    monkeypatch.setattr(app_module, "LLM_PROVIDER_CLIENT", _UnavailableProvider())
 
     result = app_module.generate_sql(
         "Show employee salary",
         app_module.SQLChatSession(),
     )
 
-    assert result["insights"].get("generic_sql") is not True
-    assert result["insights"]["clarification_required"] is True
+    assert result["insights"]["generic_sql"] is True
+    assert result["insights"]["clarification_required"] is False
+    anchor = result["insights"]["coverage_report"]["enterprise_schema_gate"]["schema_anchor"]
+    assert anchor["known_table"] == "employees"
+    assert anchor["unmapped_attributes"] == ["salary/pay/compensation"]
+    assert "FROM employees AS t" in result["sql"]
+    assert "t.salary" in result["sql"]

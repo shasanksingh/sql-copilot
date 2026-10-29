@@ -3645,9 +3645,58 @@ def _has_generic_context_gap(result) -> bool:
     return any(str(item).startswith("generic_context:") for item in unresolved)
 
 
+def _unmapped_schema_terms(result) -> list[str]:
+    """Return attributes that are missing from an otherwise identified schema entity."""
+    plan = result.plan or {}
+    unresolved = plan.get("unresolved_terms", []) if isinstance(plan, dict) else []
+    terms = [
+        str(item).strip()
+        for item in unresolved
+        if str(item).strip() and not str(item).startswith("generic_context:")
+    ]
+    if terms:
+        return list(dict.fromkeys(terms))
+
+    # Older cached planner results may contain only the user-facing mapping
+    # option. Preserve the same behaviour for those results without treating
+    # general ambiguity questions as a schema gap.
+    for option in result.clarification_options or []:
+        match = re.fullmatch(r"Map '(.+)' to a real schema column first\.", str(option).strip())
+        if match:
+            terms.append(match.group(1))
+    return list(dict.fromkeys(terms))
+
+
+def _schema_gap_anchor(result) -> dict[str, object] | None:
+    terms = _unmapped_schema_terms(result)
+    plan = result.plan or {}
+    table = ""
+    if isinstance(plan, dict):
+        table = str(plan.get("main_table") or "").strip().lower()
+    if not table:
+        table = next((str(item).strip().lower() for item in result.selected_tables or [] if str(item).strip()), "")
+    if not table or not terms:
+        return None
+
+    selected_columns = [
+        str(item).split(".", 1)[1]
+        for item in result.selected_columns or []
+        if str(item).lower().startswith(f"{table}.")
+    ]
+    known_columns = selected_columns or schema_column_order.get(table, [])[:8]
+    return {
+        "known_table": table,
+        "known_columns": known_columns,
+        "unmapped_attributes": terms,
+    }
+
+
 def _should_use_spider_generic_rag(user_query: str, result) -> bool:
     if not result.clarification_required:
         return False
+    if _schema_gap_anchor(result):
+        rag = get_spider_text_sql_rag()
+        return rag.available and rag.looks_like_text_to_sql(user_query)
     if _has_generic_context_gap(result):
         rag = get_spider_text_sql_rag()
         return rag.available and rag.looks_like_text_to_sql(user_query)
@@ -3674,7 +3723,12 @@ def _spider_generic_sql_response(
 ) -> dict[str, object] | None:
     if not _should_use_spider_generic_rag(user_query, result):
         return None
-    answer = get_spider_text_sql_rag().answer(user_query, provider=LLM_PROVIDER_CLIENT)
+    schema_anchor = _schema_gap_anchor(result)
+    answer = get_spider_text_sql_rag().answer(
+        user_query,
+        provider=LLM_PROVIDER_CLIENT,
+        schema_anchor=schema_anchor,
+    )
     if not answer:
         return None
 
@@ -3700,7 +3754,12 @@ def _spider_generic_sql_response(
         "events": [
             {
                 "stage": "enterprise_schema_gate",
-                "reason": "No enterprise schema anchor was found; generic Spider RAG was allowed.",
+                "reason": (
+                    "A known enterprise table was found, but the request uses an attribute that is not mapped "
+                    "in the active schema; a non-executable Spider-assisted draft was generated."
+                    if schema_anchor
+                    else "No enterprise schema anchor was found; generic Spider RAG was allowed."
+                ),
                 "enterprise_confidence": result.confidence,
             },
             {"stage": "spider_retrieval", "examples": examples},
@@ -3719,7 +3778,11 @@ def _spider_generic_sql_response(
             "confidence": model_confidence,
             "threshold": CONFIDENCE_THRESHOLD,
             "valid": True,
-            "validation": "Generic read-only SQL pattern generated from Spider text-to-SQL RAG; not validated against the enterprise database schema.",
+            "validation": (
+                "Read-only draft generated for an unmapped schema attribute; map the attribute before running it."
+                if schema_anchor
+                else "Generic read-only SQL pattern generated from Spider text-to-SQL RAG; not validated against the enterprise database schema."
+            ),
             "source": (
                 "Spider text-to-SQL RAG + NVIDIA LLM"
                 if llm_trace.get("active") and not llm_trace.get("fallback_used")
@@ -3731,7 +3794,11 @@ def _spider_generic_sql_response(
             "columns": [],
             "query_type": "Generic SQL",
             "has_limit": " limit " in f" {sql.lower()} ",
-            "summary": "No matching enterprise schema objects were found, so a generic Spider-style SQL solution was generated.",
+            "summary": (
+                "A schema-aware SQL draft was generated for a known business entity with an unmapped attribute."
+                if schema_anchor
+                else "No matching enterprise schema objects were found, so a generic Spider-style SQL solution was generated."
+            ),
             "clarification_required": False,
             "clarification_options": [],
             "selected_tables": [],
@@ -3740,12 +3807,16 @@ def _spider_generic_sql_response(
             "optimizations": [],
             "optimized_sql": sql,
             "optimization_explanation": [
-                "Generic Spider RAG output is illustrative and is not optimized against the enterprise database."
+                (
+                    "Map the requested attribute before executing this schema-aware SQL draft."
+                    if schema_anchor
+                    else "Generic Spider RAG output is illustrative and is not optimized against the enterprise database."
+                )
             ],
             "execution_plan": [
                 "Retrieve similar Spider text-to-SQL examples",
-                "Generate a generic read-only SQL pattern",
-                "Validate that the generic SQL is SELECT/WITH only",
+                "Generate a schema-aware read-only SQL draft" if schema_anchor else "Generate a generic read-only SQL pattern",
+                "Validate that the draft is SELECT/WITH only",
             ],
             "cost_reduction_percent": 0,
             "index_suggestions": [],
@@ -3764,7 +3835,11 @@ def _spider_generic_sql_response(
                     "required": [user_query],
                     "matched": [str(examples[0].get("text_query", ""))] if examples else [],
                     "missing": [],
-                    "note": "Similar public text-to-SQL examples were used because the enterprise schema did not match.",
+                    "note": (
+                        "Similar Spider examples were used to draft the requested unmapped attribute."
+                        if schema_anchor
+                        else "Similar public text-to-SQL examples were used because the enterprise schema did not match."
+                    ),
                 },
                 {
                     "key": "model_confidence",
@@ -3785,9 +3860,10 @@ def _spider_generic_sql_response(
             "coverage_report": {
                 "mode": "spider_generic_rag",
                 "enterprise_schema_gate": {
-                    "matched": False,
+                    "matched": bool(schema_anchor),
                     "enterprise_confidence": result.confidence,
                     "enterprise_clarification_options": result.clarification_options,
+                    "schema_anchor": schema_anchor,
                 },
                 "spider_examples": examples,
             },
@@ -3820,7 +3896,11 @@ def _spider_generic_sql_response(
             "execution_requires_approval": False,
             "generic_sql": True,
             "generic_mode": "spider_text_sql_rag",
-            "generic_warning": "This SQL is illustrative. Register or connect the target schema before executing it against a real database.",
+            "generic_warning": (
+                "This draft uses an attribute that is not mapped in the active schema. Map it before execution."
+                if schema_anchor
+                else "This SQL is illustrative. Register or connect the target schema before executing it against a real database."
+            ),
             "spider_examples": examples,
         },
     }
