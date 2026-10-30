@@ -117,7 +117,7 @@ def test_employee_details_with_an_unlisted_employer_value_routes_to_dynamic_draf
     assert result.valid is False
     assert result.clarification_required is True
     assert "FROM employees e" not in result.sql
-    assert "generic_context:engagement:northstar systems" in result.plan["unresolved_terms"]
+    assert "generic_context:employment:northstar systems" in result.plan["unresolved_terms"]
 
 
 def test_customer_details_selects_default_detail_columns(tmp_path: Path) -> None:

@@ -42,7 +42,7 @@ except ImportError:  # pragma: no cover
 
 
 TokenSet = set[str]
-QUERY_CACHE_VERSION = "enterprise-v13"
+QUERY_CACHE_VERSION = "enterprise-v14"
 
 
 def _tokens(text: str) -> list[str]:
@@ -898,7 +898,12 @@ class QueryPlannerAgent:
         if len(value) < 2 or value.lower() in {"the", "a", "an", "company", "organization", "product"}:
             return [], []
         verb = match.group("verb").lower()
-        category = "purchase" if verb in {"purchased", "bought", "ordered", "uses", "using"} else "engagement"
+        if verb in {"purchased", "bought", "ordered", "uses", "using"}:
+            category = "purchase"
+        elif verb in {"working", "work", "employed"}:
+            category = "employment"
+        else:
+            category = "engagement"
         candidate = self._best_contextual_text_column(main_table, selected_tables, category)
         if candidate is None:
             return [], [f"generic_context:{category}:{value.lower()}"]
@@ -914,6 +919,7 @@ class QueryPlannerAgent:
         category: str,
     ) -> tuple[str, str] | None:
         field_terms = {
+            "employment": {"company", "employer", "organization", "organisation"},
             "engagement": {
                 # A named employer/customer is not safely interchangeable with an
                 # internal department, team, or location.  If the schema does not
@@ -932,12 +938,14 @@ class QueryPlannerAgent:
             path = [] if table == main_table else self.graph.shortest_join_path(main_table, table)
             if table != main_table and not path:
                 continue
-            table_terms = _expanded_identifier_terms([table])
             for column in self.graph.column_order.get(table, []):
                 dtype = str(self.graph.column_types.get(table, {}).get(column, "")).lower()
                 if not any(token in dtype for token in ("char", "text", "string", "varchar")):
                     continue
-                terms = _expanded_identifier_terms([column]) | table_terms
+                # A table name alone is not evidence that every one of its
+                # columns can answer an employer/client/product filter.  Match
+                # against the column and its documented hints only.
+                terms = _expanded_identifier_terms([column])
                 for hint in self.column_hints.get(table, {}).get(column, set()):
                     terms.update(_expanded_identifier_terms([hint]))
                 overlap = terms & field_terms
