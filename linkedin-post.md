@@ -1,26 +1,43 @@
-# SQL Copilot — LinkedIn post draft
+# SQL Copilot LinkedIn launch post
 
-Shipping an end-to-end SQL workspace has been a rewarding build.
+I am excited to share **SQL Copilot** - a production-ready workspace for turning business questions into reviewed, read-only SQL.
 
-**SQL Copilot** turns a business question into reviewed, read-only SQL while keeping the decision path clear for the person using it.
+The goal was simple: make business data easier to explore without losing the context, safeguards, or visibility needed to trust the result.
 
-What is now included:
+## What it does
 
-- Schema-aware query generation across business data such as associates, customers, projects, invoices, delivery activity, and employees.
-- A seven-stage workflow that understands the request, resolves business terms, finds relevant data, plans the query, prepares SQL, reviews it, and presents the result.
-- NVIDIA Nemotron-powered structured generation, with schema grounding and validation before a query is presented.
-- Safe contextual drafts when a request uses an attribute that is not yet mapped in the schema — no invented mapping is represented as verified SQL.
-- SQL Repair for pasted syntax and connection errors, with corrected SQL and practical diagnostic guidance.
-- Saved answers and short conversation context to make repeat work faster.
-- Account creation, sign-in, recovery questions, responsive mobile layouts, and accessible light/dark themes.
-- A production frontend on Cloudflare Workers and a Flask API on Oracle Cloud, connected through a strict CORS allowlist.
+- Turns plain-language questions into SQL across business data such as associates, clients, projects, delivery activity, invoices, payments, departments, and employees.
+- Grounds every request in a schema-aware retrieval flow, business vocabulary, relationships, and SQL validation rules.
+- Runs a seven-stage multi-agent workflow: understand the request, resolve business terms, match relevant data, plan the query, prepare SQL, review and refine, then prepare the response.
+- Uses the NVIDIA Nemotron 3.5 Lightning LLM API for structured generation when a request benefits from model reasoning.
+- Keeps repeat questions fast with short-term conversation context and query caching.
+- Produces safe contextual drafts when a requested attribute is not mapped in the schema, instead of presenting an invented field as verified SQL.
+- Includes an explainability panel with confidence, review scorecard, and the seven workflow stages for every generated result.
+- Includes SQL Repair for syntax issues and common database connection errors, with corrected SQL and useful troubleshooting guidance.
+- Provides account creation, sign-in, password recovery with a security question, responsive mobile views, and accessible light and dark themes.
 
-Live workspace: https://sql-copilot-frontend.singhshasank50.workers.dev
+## How it is deployed
 
-Source code: https://github.com/shasanksingh/sql-copilot
+- Frontend: Next.js on Cloudflare Workers, with a Cloudflare Pages hostname for the custom-domain path.
+- API: Flask and Uvicorn on Oracle Cloud.
+- Security: authenticated sessions, CSRF protection, read-only SQL validation, and a strict frontend CORS allowlist.
 
-The next step is a free custom project domain: `sql-copilot.is-a.dev`.
+Try it live: https://sql-copilot.pages.dev
 
-What would make you trust a natural-language-to-SQL workflow in your day-to-day data work?
+View the source: https://github.com/shasanksingh/sql-copilot
 
-#SQL #DataAnalytics #BusinessIntelligence #DataEngineering #Cloudflare #OracleCloud #DeveloperTools
+I would love to hear what would make a natural-language-to-SQL workflow useful for your team.
+
+#SQL #DataAnalytics #BusinessIntelligence #DataEngineering #Cloudflare #OracleCloud #NVIDIA #DeveloperTools
+
+---
+
+## LinkedIn carousel upload steps
+
+1. Download `output/pdf/sql-copilot-linkedin-carousel-light.pdf` from this project.
+2. In LinkedIn, select **Start a post** and then choose the **Document** option.
+3. Upload the PDF, enter `SQL Copilot: from business question to reviewed SQL` as the document title, and paste the launch post above into the post text.
+4. Confirm the slides are in this sequence: introduction, light query review, light SQL Repair, closing slide.
+5. Add the live and GitHub links to the post body, review the document preview, then publish.
+
+The carousel uses landscape, light-theme production screenshots only. The query-review slide is the explainability snapshot: it includes confidence, the review scorecard, and the visible multi-stage workflow.
