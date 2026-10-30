@@ -3670,6 +3670,23 @@ def _unmapped_schema_terms(result) -> list[str]:
 def _schema_gap_anchor(result) -> dict[str, object] | None:
     terms = _unmapped_schema_terms(result)
     plan = result.plan or {}
+    if not terms and isinstance(plan, dict):
+        # Contextual values such as a named employer are not schema columns by
+        # themselves.  When the planner has already identified the business
+        # entity, promote that context into an explicit missing attribute so
+        # the draft remains tied to the known table rather than drifting to a
+        # wholly unrelated public-schema example.
+        contextual_labels = {
+            "employment": "employer/company",
+            "engagement": "client/organisation",
+            "purchase": "product/item",
+        }
+        for item in plan.get("unresolved_terms", []):
+            raw = str(item).strip()
+            match = re.fullmatch(r"generic_context:([a-z_]+):.+", raw)
+            if match and match.group(1) in contextual_labels:
+                terms.append(contextual_labels[match.group(1)])
+        terms = list(dict.fromkeys(terms))
     table = ""
     if isinstance(plan, dict):
         table = str(plan.get("main_table") or "").strip().lower()

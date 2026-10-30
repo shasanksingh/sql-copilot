@@ -158,3 +158,23 @@ def test_generate_sql_returns_schema_aware_draft_for_unmapped_attribute(tmp_path
     assert anchor["unmapped_attributes"] == ["salary/pay/compensation"]
     assert "FROM employees AS t" in result["sql"]
     assert "t.salary" in result["sql"]
+
+
+def test_schema_gap_anchor_keeps_known_entity_for_contextual_employer() -> None:
+    app_module = importlib.import_module("backend.app")
+    fake_result = SimpleNamespace(
+        selected_tables=["employees"],
+        selected_columns=["employees.employee_id", "employees.full_name"],
+        clarification_options=[],
+        plan={
+            "main_table": "employees",
+            "unresolved_terms": ["generic_context:employment:northstar systems"],
+        },
+    )
+
+    anchor = app_module._schema_gap_anchor(fake_result)
+
+    assert anchor is not None
+    assert anchor["known_table"] == "employees"
+    assert anchor["unmapped_attributes"] == ["employer/company"]
+    assert anchor["known_columns"] == ["employee_id", "full_name"]
