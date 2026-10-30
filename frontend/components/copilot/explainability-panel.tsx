@@ -51,13 +51,13 @@ export function ExplainabilityPanel({ response }: { response?: CopilotResponse }
   const generationEvent = traceEvent(insights, ["sql_generation", "generic_generation", "business_logic_lookup"]);
   const validationEvent = traceEvent(insights, ["sql_validation", "read_only_guard", "validation"]);
   const workflow: WorkflowStage[] = [
-    { stage: "01", title: "Intent Analysis Agent", detail: eventDetail(intentEvent, isMetadata ? "Recognised a schema catalog request." : `Classified this as ${businessName(insights?.query_type ?? "business")}.`), icon: <Sparkles className="h-3.5 w-3.5" /> },
-    { stage: "02", title: "Entity Resolution Agent", detail: eventDetail(entityEvent, tables.length ? `Resolved business terms for ${tables.slice(0, 2).map(businessName).join(" and ")}.` : "Resolved the request terms before planning."), icon: <Workflow className="h-3.5 w-3.5" /> },
-    { stage: "03", title: "Schema Linking Agent", detail: eventDetail(linkingEvent, tables.length ? `Matched ${tables.slice(0, 3).map(businessName).join(", ")}.` : isMetadata ? "Retrieved the registered schema catalog." : "No registered schema match was required for this response."), icon: <Database className="h-3.5 w-3.5" /> },
-    { stage: "04", title: "Query Planning Agent", detail: eventDetail(planningEvent, isSql ? "Prepared a read-only plan with the matched business data." : "Prepared a non-executable information response."), icon: <Gauge className="h-3.5 w-3.5" /> },
-    { stage: "05", title: "SQL Generation Agent", detail: eventDetail(generationEvent, isSql ? (insights?.cache_hit ? "Reused a matching reviewed SQL result." : "Generated a read-only SQL statement.") : "Returned the requested schema information without SQL."), icon: <Sparkles className="h-3.5 w-3.5" /> },
-    { stage: "06", title: "SQL Validation & Refinement Agent", detail: !isSql ? "No SQL validation was needed for this information response." : genericDraft ? "Checked that the draft is read-only; target-schema validation is still required." : retries ? `${retries} repair ${retries === 1 ? "pass was" : "passes were"} completed before review.` : eventDetail(validationEvent, insights?.valid ? "Validated the first SQL draft; no repair pass was required." : "Validation found items that require review."), icon: <RefreshCw className="h-3.5 w-3.5" /> },
-    { stage: "07", title: "Response Delivery Agent", detail: insights?.cache_hit ? "Delivered the matching saved response." : genericDraft ? "Delivered a draft that requires target-schema review." : "Prepared the response for review." , icon: <CheckCircle2 className="h-3.5 w-3.5" /> },
+    { stage: "01", title: "Understand the request", detail: eventDetail(intentEvent, isMetadata ? "Recognised a schema catalog request." : `Classified this as ${businessName(insights?.query_type ?? "business")}.`), icon: <Sparkles className="h-3.5 w-3.5" /> },
+    { stage: "02", title: "Resolve business terms", detail: eventDetail(entityEvent, tables.length ? `Resolved business terms for ${tables.slice(0, 2).map(businessName).join(" and ")}.` : "Resolved the request terms before planning."), icon: <Workflow className="h-3.5 w-3.5" /> },
+    { stage: "03", title: "Match relevant data", detail: eventDetail(linkingEvent, tables.length ? `Matched ${tables.slice(0, 3).map(businessName).join(", ")}.` : isMetadata ? "Retrieved the registered schema catalog." : "No registered schema match was required for this response."), icon: <Database className="h-3.5 w-3.5" /> },
+    { stage: "04", title: "Plan the query", detail: eventDetail(planningEvent, isSql ? "Prepared a read-only plan with the matched business data." : "Prepared a non-executable information response."), icon: <Gauge className="h-3.5 w-3.5" /> },
+    { stage: "05", title: "Prepare the SQL", detail: eventDetail(generationEvent, isSql ? (insights?.cache_hit ? "Reused a matching reviewed SQL result." : "Generated a read-only SQL statement.") : "Returned the requested schema information without SQL."), icon: <Sparkles className="h-3.5 w-3.5" /> },
+    { stage: "06", title: "Review and refine", detail: !isSql ? "No SQL validation was needed for this information response." : genericDraft ? "Checked that the draft is read-only; target-schema validation is still required." : retries ? `${retries} repair ${retries === 1 ? "pass was" : "passes were"} completed before review.` : eventDetail(validationEvent, insights?.valid ? "Validated the first SQL draft; no repair pass was required." : "Validation found items that require review."), icon: <RefreshCw className="h-3.5 w-3.5" /> },
+    { stage: "07", title: "Prepare the response", detail: insights?.cache_hit ? "Delivered the matching saved response." : genericDraft ? "Delivered a draft that requires target-schema review." : "Prepared the response for review." , icon: <CheckCircle2 className="h-3.5 w-3.5" /> },
   ];
 
   return (
@@ -72,7 +72,7 @@ export function ExplainabilityPanel({ response }: { response?: CopilotResponse }
         {isMetadata ? <section className="rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-4"><div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Response type</div><div className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">Schema catalog</div><p className="mt-1 text-sm leading-5 text-slate-500">This response lists registered data sources. It is not SQL, so no confidence score applies.</p></section> : <section className="rounded-2xl border border-cyan-300/20 bg-gradient-to-br from-cyan-300/14 to-indigo-400/12 p-4"><div className="flex items-end justify-between gap-4"><div><div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Confidence</div><div className="mt-1 text-4xl font-semibold tracking-tight text-slate-950 dark:text-white">{confidence}<span className="text-xl text-cyan-500">%</span></div></div><Gauge className="h-5 w-5 text-cyan-500" /></div><Progress className="mt-3 h-2" value={confidence} /></section>}
 
         <section>
-          <SectionLabel>Agent scorecard</SectionLabel>
+          <SectionLabel>Review scorecard</SectionLabel>
           <div className="grid grid-cols-1 gap-2 min-[420px]:grid-cols-3">
             <ScoreCard icon={<Sparkles className="h-4 w-4" />} label="Planning" value={plannerScore} />
             <ScoreCard icon={<ShieldCheck className="h-4 w-4" />} label="Validation" value={validationScore} />
@@ -80,7 +80,7 @@ export function ExplainabilityPanel({ response }: { response?: CopilotResponse }
           </div>
         </section>
 
-        <section><SectionLabel>7-stage agent workflow</SectionLabel><WorkflowSequence stages={workflow} /></section>
+        <section><SectionLabel>7-step review flow</SectionLabel><WorkflowSequence stages={workflow} /></section>
 
         <section>
           <SectionLabel>Request details</SectionLabel>

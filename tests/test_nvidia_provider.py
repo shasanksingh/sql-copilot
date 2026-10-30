@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 
 from backend.llm_providers import (
@@ -265,6 +266,42 @@ def test_nvidia_provider_uses_direct_http_chat_completions(tmp_path: Path) -> No
     assert requests[0][1] == 30
     assert provider.health_check()["adapter"] == "nvidia-http-chat-completions"
     assert isinstance(create_llm_provider(config), NvidiaHttpChatCompletionsProvider)
+
+
+def test_nvidia_structured_generation_uses_json_mode_without_thinking(tmp_path: Path) -> None:
+    requests = []
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return _FakeHttpResponse()
+
+    config = ProviderConfig(
+        provider="nvidia",
+        adapter="openai-compatible",
+        base_url="https://integrate.api.nvidia.com/v1",
+        api_key="test-key",
+        chat_model="nvidia/nemotron-3.5-lightning-30b-a3b",
+        embedding_model="",
+        local_model="",
+        model_root=tmp_path,
+        remote_requested=True,
+        timeout_seconds=30,
+        max_retries=0,
+        temperature=0,
+        max_generation_retries=3,
+        max_tokens=1024,
+        top_p=1,
+        reasoning_budget=512,
+    )
+    provider = NvidiaHttpChatCompletionsProvider(config, urlopen=fake_urlopen)
+
+    result = provider.generate_structured("Return JSON.", {"query": "select one"})
+    request_payload = json.loads(requests[0][0].data.decode("utf-8"))
+
+    assert result.success is True
+    assert request_payload["response_format"] == {"type": "json_object"}
+    assert request_payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "reasoning_budget" not in request_payload
 
 
 def test_windows_socket_denial_is_reported_as_network_blocked() -> None:

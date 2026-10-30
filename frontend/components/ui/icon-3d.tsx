@@ -25,19 +25,19 @@ const toneClasses: Record<Icon3DTone, { base: string; side: string; icon: string
   indigo: {
     base: "from-indigo-200 via-indigo-400 to-violet-700",
     side: "from-indigo-800 to-violet-950",
-    icon: "text-white",
+    icon: "text-slate-950",
     glow: "shadow-indigo-500/25"
   },
   rose: {
     base: "from-rose-200 via-rose-400 to-red-700",
     side: "from-rose-800 to-red-950",
-    icon: "text-white",
+    icon: "text-slate-950",
     glow: "shadow-rose-500/25"
   },
   slate: {
     base: "from-slate-200 via-slate-400 to-slate-700",
     side: "from-slate-700 to-slate-950",
-    icon: "text-white",
+    icon: "text-slate-950",
     glow: "shadow-slate-500/20"
   }
 };
@@ -78,7 +78,7 @@ export function Icon3D({
       />
       <span
         className={cn(
-          "relative grid h-full w-full place-items-center rounded-[7px] border border-white/45 bg-gradient-to-br shadow-lg transition-transform duration-200",
+          "relative grid h-full w-full place-items-center rounded-[7px] border border-white/70 bg-gradient-to-br shadow-lg ring-1 ring-slate-950/10 transition-transform duration-200 dark:border-white/55 dark:ring-white/10",
           "before:absolute before:inset-x-1.5 before:top-1.5 before:h-2 before:rounded-full before:bg-white/45 before:content-['']",
           "group-hover:-translate-y-0.5",
           palette.base,
@@ -86,7 +86,7 @@ export function Icon3D({
         )}
         style={{ transform: "perspective(90px) rotateX(8deg) rotateY(-9deg)" }}
       >
-        <Icon className={cn(dimensions.icon, palette.icon, "relative drop-shadow-sm")} strokeWidth={2.45} />
+        <Icon className={cn(dimensions.icon, palette.icon, "relative drop-shadow-[0_1px_0_rgba(255,255,255,0.55)] dark:drop-shadow-[0_1px_1px_rgba(2,6,23,0.55)]")} strokeWidth={2.45} />
       </span>
     </span>
   );

@@ -189,7 +189,7 @@ export default function DataModelStudioPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between gap-3">
             <CardTitle className="flex items-center gap-2"><DatabaseZap className="h-4 w-4 text-cyan-200" />New Table Request</CardTitle>
-            <Badge tone="cyan">SchemaDesignAgent</Badge>
+            <Badge tone="cyan">Schema workspace</Badge>
           </CardHeader>
           <CardContent className="space-y-3">
             <label className="block">

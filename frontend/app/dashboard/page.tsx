@@ -272,7 +272,7 @@ export default function DashboardPage() {
       label: "Intent accuracy",
       value: percent(filteredTrend.length ? average(filteredTrend.map((point) => point.intent_score)) : metrics?.agent_telemetry?.intent_accuracy ?? 0),
       helper: "Intent classifier signal",
-      detail: "Average intent confidence from the agent telemetry rows in the current range.",
+      detail: "Average request confidence from the evaluation rows in the current range.",
       icon: Bot,
       tone: "cyan",
       actionHref: "/planner",
@@ -327,7 +327,7 @@ export default function DashboardPage() {
       label: "Repair attempts",
       value: String(llmMetrics?.repair_attempts ?? 0),
       helper: "SQL repair loop usage",
-      detail: "Number of repair passes requested by the backend LLM provider workflow.",
+      detail: "Number of repair passes used during query review.",
       icon: Wrench,
       tone: "slate",
       actionHref: "/settings",
@@ -472,7 +472,7 @@ export default function DashboardPage() {
       <div className="mt-3 grid gap-3 xl:grid-cols-2">
         <Card>
           <CardContent>
-            <div className="mb-4 text-sm font-semibold text-white">Agent Telemetry</div>
+            <div className="mb-4 text-sm font-semibold text-white">Request quality</div>
             <div className="grid gap-3 sm:grid-cols-2">
               {telemetryStats.map((item) => (
                 <TelemetryButton key={item.key} metric={item} onOpen={() => setActiveMetricKey(item.key)} />

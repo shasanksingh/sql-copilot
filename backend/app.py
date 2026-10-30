@@ -3962,7 +3962,11 @@ def generate_sql(
     result = get_enterprise_copilot().run(normalised or user_query)
     generic_result = _spider_generic_sql_response(user_query, result, max_retries=max_retries)
     if generic_result is not None:
-        log_step("[spider-rag] No enterprise schema anchor found; returning generic SQL example")
+        gate = generic_result.get("insights", {}).get("coverage_report", {}).get("enterprise_schema_gate", {})
+        if gate.get("schema_anchor"):
+            log_step("[spider-rag] Generated a schema-aware draft for an unmapped request attribute")
+        else:
+            log_step("[spider-rag] No enterprise schema anchor found; returning generic SQL example")
         translated_result = _apply_target_language(generic_result, target_language)
         chat_session.add(user_query, str(translated_result["sql"]))
         return translated_result

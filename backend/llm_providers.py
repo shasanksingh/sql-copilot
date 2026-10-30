@@ -878,7 +878,12 @@ class NvidiaHttpChatCompletionsProvider(BaseLLMProvider):
     def available(self) -> bool:
         return self.config.chat_enabled and not self._runtime_blocked()
 
-    def _request_payload(self, messages: list[dict[str, str]] | str) -> dict[str, Any]:
+    def _request_payload(
+        self,
+        messages: list[dict[str, str]] | str,
+        *,
+        structured_output: bool = False,
+    ) -> dict[str, Any]:
         normalized_messages = (
             messages if isinstance(messages, list)
             else [{"role": "user", "content": str(messages)}]
@@ -891,12 +896,26 @@ class NvidiaHttpChatCompletionsProvider(BaseLLMProvider):
             "max_tokens": self.config.max_tokens,
             "stream": False,
         }
-        if self.config.reasoning_budget and "nemotron-3.5-lightning" in self.config.chat_model:
+        is_nemotron_reasoning_model = "nemotron-3.5-lightning" in self.config.chat_model
+        if structured_output:
+            # Nemotron's reasoning trace and final answer share one token budget.
+            # JSON mode plus disabled thinking keeps its visible output parseable
+            # and reduces latency for planner/SQL payloads.
+            payload["response_format"] = {"type": "json_object"}
+            if is_nemotron_reasoning_model:
+                payload["chat_template_kwargs"] = {"enable_thinking": False}
+        elif self.config.reasoning_budget and is_nemotron_reasoning_model:
             payload["chat_template_kwargs"] = {"enable_thinking": True}
             payload["reasoning_budget"] = min(self.config.reasoning_budget, self.config.max_tokens)
         return payload
 
-    def generate(self, messages: list[dict[str, str]] | str, **_: Any) -> LLMGenerationResult:
+    def generate(
+        self,
+        messages: list[dict[str, str]] | str,
+        *,
+        structured_output: bool = False,
+        **_: Any,
+    ) -> LLMGenerationResult:
         if self._runtime_blocked():
             return self._blocked_generation_result()
         if not self.available:
@@ -913,7 +932,10 @@ class NvidiaHttpChatCompletionsProvider(BaseLLMProvider):
 
         started = time.perf_counter()
         url = f"{self.config.base_url.rstrip('/')}/chat/completions"
-        payload = json.dumps(self._request_payload(messages), ensure_ascii=True).encode("utf-8")
+        payload = json.dumps(
+            self._request_payload(messages, structured_output=structured_output),
+            ensure_ascii=True,
+        ).encode("utf-8")
         request = urllib.request.Request(
             url,
             data=payload,
@@ -974,7 +996,7 @@ class NvidiaHttpChatCompletionsProvider(BaseLLMProvider):
         result = self.generate([
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": payload_text},
-        ])
+        ], structured_output=True)
         if not result.success:
             return result
         try:
@@ -1002,7 +1024,7 @@ class NvidiaHttpChatCompletionsProvider(BaseLLMProvider):
                         f"MODEL_RESPONSE:\n{result.text}"
                     ),
                 },
-            ])
+            ], structured_output=True)
             repair_result.retry_count = result.retry_count + 1
             if not repair_result.success:
                 return repair_result
