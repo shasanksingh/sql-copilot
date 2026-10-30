@@ -915,8 +915,12 @@ class QueryPlannerAgent:
     ) -> tuple[str, str] | None:
         field_terms = {
             "engagement": {
-                "company", "employer", "organization", "client", "business", "unit",
-                "department", "team", "division", "practice", "office", "location",
+                # A named employer/customer is not safely interchangeable with an
+                # internal department, team, or location.  If the schema does not
+                # have a true engagement field, keep the value unresolved so the
+                # dynamic draft path can preserve the user's intent rather than
+                # inventing a department filter.
+                "company", "employer", "organization", "client", "customer", "account",
             },
             "purchase": {
                 "product", "item", "catalog", "sku", "order", "purchase", "service",

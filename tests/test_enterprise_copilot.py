@@ -111,14 +111,13 @@ def test_employee_name_and_department_selects_only_requested_columns(tmp_path: P
     assert "e.status" not in result.sql
 
 
-def test_employee_details_with_an_unlisted_business_value_stays_schema_grounded(tmp_path: Path) -> None:
+def test_employee_details_with_an_unlisted_employer_value_routes_to_dynamic_draft(tmp_path: Path) -> None:
     result = _copilot(tmp_path).run("Show employee details working in Northstar Systems", allow_cache=False)
 
-    assert result.valid is True
-    assert result.clarification_required is False
-    assert "FROM employees e" in result.sql
-    assert "LOWER(e.department) = 'northstar systems'" in result.sql
-    assert result.confidence >= 70
+    assert result.valid is False
+    assert result.clarification_required is True
+    assert "FROM employees e" not in result.sql
+    assert "generic_context:engagement:northstar systems" in result.plan["unresolved_terms"]
 
 
 def test_customer_details_selects_default_detail_columns(tmp_path: Path) -> None:
