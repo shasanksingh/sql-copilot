@@ -41,6 +41,7 @@ reports/*
 reports_test/*
 !reports_test/.gitkeep
 *.log
+artifacts/
 
 # Frontend dependencies and build artifacts
 node_modules/
