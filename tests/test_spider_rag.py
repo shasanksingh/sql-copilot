@@ -176,5 +176,5 @@ def test_schema_gap_anchor_keeps_known_entity_for_contextual_employer() -> None:
 
     assert anchor is not None
     assert anchor["known_table"] == "employees"
-    assert anchor["unmapped_attributes"] == ["employer/company"]
+    assert anchor["unmapped_attributes"] == ["employer_company"]
     assert anchor["known_columns"] == ["employee_id", "full_name"]

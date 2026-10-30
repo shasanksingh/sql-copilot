@@ -3677,9 +3677,12 @@ def _schema_gap_anchor(result) -> dict[str, object] | None:
         # the draft remains tied to the known table rather than drifting to a
         # wholly unrelated public-schema example.
         contextual_labels = {
-            "employment": "employer/company",
-            "engagement": "client/organisation",
-            "purchase": "product/item",
+            # Use SQL-safe placeholders. They are intentionally not present
+            # in the active schema, so the result remains a non-executable
+            # draft until the organisation maps the field.
+            "employment": "employer_company",
+            "engagement": "client_organisation",
+            "purchase": "product_item",
         }
         for item in plan.get("unresolved_terms", []):
             raw = str(item).strip()
