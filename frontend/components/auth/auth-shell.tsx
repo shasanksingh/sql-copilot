@@ -11,7 +11,7 @@ export function AuthShell({
   children: React.ReactNode;
 }) {
   return (
-    <main className="relative grid min-h-dvh overflow-hidden bg-[#050816] lg:grid-cols-[minmax(0,1.15fr)_minmax(440px,.85fr)]">
+    <main className="auth-shell relative grid min-h-dvh overflow-hidden bg-[#050816] lg:grid-cols-[minmax(0,1.15fr)_minmax(440px,.85fr)]">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_15%_20%,rgba(34,211,238,.15),transparent_27%),radial-gradient(circle_at_72%_0%,rgba(129,140,248,.17),transparent_28%),linear-gradient(rgba(148,163,184,.035)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,.035)_1px,transparent_1px)] bg-[size:auto,auto,44px_44px,44px_44px]" />
       <section className="relative hidden border-r border-white/10 px-10 py-9 lg:flex lg:flex-col xl:px-14 xl:py-12">
         <header className="flex items-center">
