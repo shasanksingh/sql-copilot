@@ -58,6 +58,13 @@ function apiBase() {
     if (isLoopback(configured.hostname) && isLoopback(window.location.hostname)) {
       configured.hostname = window.location.hostname;
     }
+    // The production Worker proxies API paths on the same hostname as the
+    // frontend. When the app is reached through a Pages proxy or a custom
+    // domain, keep authentication cookies first-party by using that hostname
+    // instead of the Worker deployment hostname embedded at build time.
+    if (!isLoopback(configured.hostname) && window.location.origin !== configured.origin) {
+      return window.location.origin;
+    }
     return configured.toString().replace(/\/$/, "");
   } catch {
     return CONFIGURED_API_BASE;
