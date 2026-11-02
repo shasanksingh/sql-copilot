@@ -24,6 +24,7 @@ async function createAccount(page: Page, suffix: string) {
   await page.getByLabel("Email").fill(`e2e-${suffix}-${Date.now()}@example.com`);
   await page.getByLabel("Password", { exact: true }).fill("BrowserPass1!");
   await page.getByLabel("Confirm password").fill("BrowserPass1!");
+  await page.getByLabel("Your answer").fill("Pune");
   await page.getByRole("button", { name: "Create account" }).click();
   await expect(page).toHaveURL(/\/dashboard$/);
 }
@@ -42,6 +43,7 @@ test("localhost login renders the dashboard after authentication", async ({ page
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByLabel("Confirm password").fill(password);
+  await page.getByLabel("Your answer").fill("Pune");
   await page.getByRole("button", { name: "Create account" }).click();
   await expect(page).toHaveURL(`${localhostBaseURL}/dashboard`);
   await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
@@ -75,7 +77,7 @@ test("desktop chat keeps suggestions above the stable composer", async ({ page }
 
   await textarea.fill("Show all active projects");
   await page.getByRole("button", { name: "Generate SQL" }).click();
-  await expect(page.getByText("Valid SQL").last()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("Reviewed SQL").last()).toBeVisible({ timeout: 30_000 });
   await expect(textarea).toBeVisible();
   await expect(page.getByRole("button", { name: /^(List|Show|Count|Total|Trend)\sProjects/i }).first()).toBeVisible();
   await expect(page.getByText(/live tables, relationship map/i)).toBeVisible();
@@ -89,6 +91,28 @@ test("desktop chat keeps suggestions above the stable composer", async ({ page }
   await expect(page.getByTitle("Dashboard")).toBeVisible();
   await expect(page.getByRole("button", { name: "Expand sidebar" })).toBeVisible();
   await expect(page.getByText("Enterprise analytics workspace")).toBeHidden();
+});
+
+test("chat downloads only reviewed SQL as a .sql file", async ({ page }) => {
+  await createAccount(page, "sql-export");
+  await page.goto("/copilot");
+
+  const textarea = page.getByPlaceholder("Ask for SQL in natural language");
+  await textarea.fill("Show all customer details");
+  await page.getByRole("button", { name: "Generate SQL" }).click();
+  await expect(page.getByText("Reviewed SQL").last()).toBeVisible({ timeout: 30_000 });
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download reviewed SQL" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^sql-copilot-queries-\d{4}-\d{2}-\d{2}\.sql$/);
+  const stream = await download.createReadStream();
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream!) chunks.push(Buffer.from(chunk));
+  const contents = Buffer.concat(chunks).toString("utf8");
+  expect(contents).toContain("SELECT *\nFROM clients;");
+  expect(contents).not.toContain('"insights"');
+  expect(contents).not.toContain("nvidia/");
 });
 
 test("mobile navigation and composer remain inside the viewport", async ({ page }) => {

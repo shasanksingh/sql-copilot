@@ -17,3 +17,5 @@ uvicorn
 asgiref
 networkx
 rapidfuzz
+langsmith
+prometheus-client

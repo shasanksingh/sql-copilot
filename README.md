@@ -9,14 +9,16 @@
 </p>
 
 <p align="center">
-  <a href="https://sql-copilot-puce.vercel.app">
-    <img src="https://img.shields.io/badge/Live%20Workspace-Open-2563EB?style=for-the-badge&logo=vercel&logoColor=white" alt="Open SQL Copilot" />
+  <a href="https://sql-copilot.pages.dev">
+    <img src="https://img.shields.io/badge/Live%20Workspace-Open-F38020?style=for-the-badge&logo=cloudflare&logoColor=white" alt="Open SQL Copilot" />
   </a>
   <img src="https://img.shields.io/badge/Frontend-Next.js%2015-111827?style=for-the-badge&logo=nextdotjs&logoColor=white" alt="Next.js 15" />
   <img src="https://img.shields.io/badge/UI-React%2019-61DAFB?style=for-the-badge&logo=react&logoColor=0f172a" alt="React 19" />
   <img src="https://img.shields.io/badge/Backend-Flask%20ASGI-000000?style=for-the-badge&logo=flask&logoColor=white" alt="Flask ASGI backend" />
   <img src="https://img.shields.io/badge/Provider-NVIDIA%20GPT--OSS-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="NVIDIA GPT-OSS provider" />
   <img src="https://img.shields.io/badge/Workflow-LangGraph-1f6feb?style=for-the-badge" alt="LangGraph workflow" />
+  <img src="https://img.shields.io/badge/Tracing-LangSmith-3B82F6?style=for-the-badge" alt="Optional LangSmith tracing" />
+  <img src="https://img.shields.io/badge/Operations-Grafana%20%2B%20Prometheus-F46800?style=for-the-badge" alt="Optional Grafana and Prometheus monitoring" />
 </p>
 
 <p align="center">
@@ -36,6 +38,7 @@ SQL Copilot is built for teams that need controlled SQL generation instead of a 
 | Out-of-schema questions | The assistant can provide generic SQL guidance using the Spider RAG corpus and synthetic examples without pretending the enterprise schema contains missing tables. |
 | Safety | Only one read-only `SELECT` statement is accepted; write, DDL, privilege, and execution operations are blocked. |
 | Explainability | Planner steps, join path, validation, coverage, provider status, fallback reason, confidence signals, and optimization guidance are visible in the UI. |
+| Observability | Optional privacy-first LangSmith request traces plus Prometheus metrics and a provisioned Grafana overview dashboard. |
 
 ## Product Surface
 
@@ -140,6 +143,12 @@ flowchart LR
     Local["Deterministic local planner"]
   end
 
+  subgraph Observability["Optional observability"]
+    LangSmith["LangSmith traces"]
+    Prometheus["Prometheus metrics"]
+    Grafana["Grafana dashboard"]
+  end
+
   UI --> Routes
   Chat --> Routes
   Dash --> Routes
@@ -156,7 +165,14 @@ flowchart LR
   Coverage --> Confidence
   Confidence --> Routes
   Metrics --> Dash
+  Routes --> LangSmith
+  Routes --> Prometheus
+  Prometheus --> Grafana
 ```
+
+## Observability
+
+LangSmith tracing is opt-in and privacy-first: by default it records request lifecycle metadata, not prompts or generated SQL. The Oracle deployment bundle also provides an opt-in Prometheus and Grafana profile with a provisioned SQL Copilot Overview dashboard. See [observability.md](docs/observability.md) for environment variables, metrics, secure access, and the production runbook.
 
 ## Query Workflow
 

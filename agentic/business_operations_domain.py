@@ -44,55 +44,10 @@ def parse_business_operations_rule(
     if not q:
         return None
 
-    wants_available = bool(re.search(r"\b(available|availability|capacity|bench|workload)\b", q))
     mentions_associate = bool(re.search(r"\b(associate|associates|staff|team member|consultant|workforce)\b", q))
-    needs_time_or_trend_analysis = bool(re.search(
-        r"\b(trend|monthly|weekly|quarterly|this\s+(?:week|month|quarter)|last\s+(?:week|month|quarter)|by\s+(?:day|week|month|quarter)|count|total|sum|average)\b",
-        q,
-    ))
-    if (
-        wants_available
-        and mentions_associate
-        and not needs_time_or_trend_analysis
-        and {"associates", "associate_availability"}.issubset(tables)
-    ):
-        return {
-            "name": "business_available_associates",
-            "domain_label": "Business Operations",
-            "main_table": "associate_availability",
-            "selected_columns": [
-                ("associates", "associate_name"),
-                ("associates", "role_title"),
-                ("associates", "business_unit"),
-                ("associate_availability", "capacity_percent"),
-                ("associate_availability", "available_from"),
-                ("associate_availability", "available_to"),
-            ],
-            "joins": [("associate_availability", "associate_id", "associates", "associate_id")],
-            "filters": [{"table": "associate_availability", "column": "availability_status", "operator": "available", "value": "available"}],
-            "sql": (
-                "SELECT\n"
-                "  a.associate_name,\n"
-                "  a.role_title,\n"
-                "  a.business_unit,\n"
-                "  av.capacity_percent,\n"
-                "  av.available_from,\n"
-                "  av.available_to\n"
-                "FROM associate_availability av\n"
-                "JOIN associates a ON av.associate_id = a.associate_id\n"
-                "WHERE LOWER(av.availability_status) = 'available'\n"
-                "ORDER BY av.capacity_percent DESC, a.associate_name ASC;"
-            ),
-            "required": ["available associate", "availability", "capacity"],
-            "matched": ["available associate", "availability", "capacity"],
-            "complexity": "MODERATE",
-            "business_steps": [
-                "Identify available associate capacity periods.",
-                "Join capacity records to the associate directory.",
-                "Prioritise associates with the most available capacity.",
-            ],
-        }
-
+    # Associate availability and activity requests are deliberately handled by
+    # the query planner. Unlike a fixed report template, it can preserve the
+    # requested period, measure, dimension, and wording for each question.
     mentions_assignment = bool(re.search(r"\b(assignment|assignments|allocation|staffing)\b", q))
     mentions_project = bool(re.search(r"\b(project|projects|delivery)\b", q))
     wants_active_assignment = bool(re.search(r"\b(active|current|ongoing|open)\b", q))

@@ -195,7 +195,7 @@ class EntityCoverageAgent:
                     expected_display[table] = readable
                     if readable not in required:
                         required.append(readable)
-                    if readable in selected_columns and readable not in matched:
+                    if (getattr(plan, "select_all", False) or readable in selected_columns) and readable not in matched:
                         matched.append(readable)
 
         score = int(round((len(matched) / len(required) * 100))) if required else 100
@@ -205,7 +205,11 @@ class EntityCoverageAgent:
             for table, readable in expected_display.items():
                 if readable in (schema_columns or {}).get(table, set()):
                     table_selected = [(t, c) for t, c in plan.selected_columns if t == table] if plan else []
-                    if table_selected and all(any(re.match(p, c) for p in self.ID_PATTERNS) for _, c in table_selected):
+                    if (
+                        not getattr(plan, "select_all", False)
+                        and table_selected
+                        and all(any(re.match(p, c) for p in self.ID_PATTERNS) for _, c in table_selected)
+                    ):
                         score = max(0, score - 30)
 
         return {"score": score, "required": sorted(set(required)), "matched": sorted(set(matched)), "missing": sorted(set(required) - set(matched)), "expected_display": expected_display}
@@ -233,7 +237,10 @@ class ColumnCoverageAgent:
                 str(aggregation.get("column", ""))
                 for aggregation in plan.aggregations
             )
-        matched = [c for c in requested_columns if c in selected_columns]
+        matched = [
+            c for c in requested_columns
+            if (plan and getattr(plan, "select_all", False)) or c in selected_columns
+        ]
         score = int(round((len(matched) / len(requested_columns) * 100))) if requested_columns else 100
         return {"score": score, "required": sorted(set(requested_columns)), "matched": sorted(set(matched)), "missing": sorted(set(requested_columns) - set(matched))}
 

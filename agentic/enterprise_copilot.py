@@ -161,6 +161,9 @@ class QueryPlan:
     time_column: str | None = None
     running_total: bool = False
     window_partition_by: list[tuple[str, str]] = field(default_factory=list)
+    # Bare, unfiltered directory requests are intentionally represented as
+    # SELECT * so a future schema column is not silently omitted.
+    select_all: bool = False
 
 
 @dataclass
@@ -798,16 +801,24 @@ class QueryPlannerAgent:
             if item.get("table") in planned_tables
         )
 
-        selected_columns = self._explicit_requested_columns(main_table, entities)
+        select_all = self._is_simple_full_table_request(
+            intent,
+            entities,
+            query,
+            main_table,
+            selected_tables,
+            plan_filters,
+        )
+        selected_columns = [] if select_all else self._explicit_requested_columns(main_table, entities)
         display_triggers = {"show", "list", "display", "view", "get"}
         raw_terms = set(entities.raw_terms or [])
         # If no explicit requested columns, pick readable columns for main table
-        if not selected_columns:
+        if not selected_columns and not select_all:
             selected_columns = self._concise_display_columns(main_table, entities)
 
         # For display intents, ensure readable/display columns are selected for all relevant tables (multi-table displays)
         try:
-            if getattr(self, "display_selector", None) and raw_terms & display_triggers:
+            if not select_all and getattr(self, "display_selector", None) and raw_terms & display_triggers:
                 for tbl in sorted(selected_tables):
                     if tbl == main_table:
                         continue
@@ -866,7 +877,45 @@ class QueryPlannerAgent:
             order_by,
             intent.limit,
             confidence,
+            select_all=select_all,
         )
+
+    def _is_simple_full_table_request(
+        self,
+        intent: Intent,
+        entities: EntityExtraction,
+        query: str,
+        main_table: str,
+        selected_tables: set[str],
+        filters: list[dict[str, str]],
+    ) -> bool:
+        """Return true only for an unfiltered, single-table listing request."""
+        if main_table not in self.graph.tables or len(selected_tables) != 1 or filters:
+            return False
+        if (
+            intent.aggregations
+            or intent.group_by
+            or intent.order_by
+            or intent.limit
+            or intent.time_granularity
+            or intent.time_range
+            or intent.requires_join
+        ):
+            return False
+        q = re.sub(r"\s+", " ", query.lower()).strip()
+        if not re.search(r"\b(show|list|display|get|give|fetch)\b", q):
+            return False
+        if not re.search(r"\b(all|details?|records?|entries|data)\b", q):
+            return False
+        disallowed = {
+            "where", "with", "having", "above", "below", "before", "after",
+            "between", "working", "assigned", "available", "active", "open",
+            "latest", "recent", "month", "week", "quarter", "year", "top",
+            "count", "total", "sum", "average", "trend", "by",
+        }
+        if set(_tokens(q)) & disallowed:
+            return False
+        return not self._explicit_requested_columns(main_table, entities)
 
     def _contextual_text_filters(
         self,
@@ -976,10 +1025,128 @@ class QueryPlannerAgent:
     ) -> QueryPlan | None:
         q = query.lower()
 
+        associate_terms = r"\b(associate|associates|consultant|consultants|team\s+member|team\s+members|workforce)\b"
+        availability_terms = r"\b(available|availability|capacity|bench|workload)\b"
+        activity_terms = r"\b(activity|activities|delivery\s+hours?|hours\s+logged|utilization|work\s+log)\b"
+
+        if (
+            re.fullmatch(r"(?:list|show|display|get)(?:\s+all)?\s+(?:associate\s+)?activit(?:y|ies)", q.strip())
+            and self._has_columns("associate_activity", "activity_id")
+        ):
+            return QueryPlan(
+                main_table="associate_activity",
+                selected_columns=[],
+                joins=[],
+                filters=[],
+                aggregations=[],
+                group_by=[],
+                order_by=None,
+                limit=None,
+                confidence=96,
+                select_all=True,
+            )
+
+        if (
+            (
+                (re.search(associate_terms, q) and re.search(activity_terms, q))
+                or re.search(r"\bdelivery\s+hours?\b", q)
+            )
+            and bool(re.search(r"\b(hours?|utilization|project|trend|monthly|this|last|from|by)\b", q))
+            and self._has_columns("associate_activity", "activity_id", "associate_id", "project_id", "activity_date", "hours_logged")
+        ):
+            wants_hours = bool(re.search(r"\b(hours?|utilization)\b", q))
+            wants_trend = bool(re.search(r"\b(trend|monthly|by\s+month)\b", q))
+            joins = self.joiner.discover("associate_activity", ["projects"] if "project" in q else ["associates"])
+            filters: list[dict[str, str]] = []
+            if intent.time_range:
+                filters.append({"table": "associate_activity", "column": "activity_date", "operator": intent.time_range, "value": ""})
+            selected_columns: list[tuple[str, str]] = []
+            group_by: list[tuple[str, str]] = []
+            aggregations: list[dict[str, str]] = []
+            time_granularity = "month" if wants_trend else None
+            if "project" in q and self._has_columns("projects", "project_name"):
+                selected_columns.append(("projects", "project_name"))
+                if wants_hours:
+                    group_by.append(("projects", "project_name"))
+            if wants_hours:
+                aggregations.append({"function": "SUM", "table": "associate_activity", "column": "hours_logged", "alias": "delivery_hours"})
+            elif not selected_columns:
+                selected_columns = self._readable_base_columns("associate_activity", entities)
+                selected_columns.append(("associate_activity", "activity_date"))
+            return QueryPlan(
+                main_table="associate_activity",
+                selected_columns=self._dedupe_columns(selected_columns),
+                joins=joins,
+                filters=filters,
+                aggregations=aggregations,
+                group_by=group_by,
+                order_by=("delivery_hours", "DESC") if aggregations else ("associate_activity.activity_date", "DESC"),
+                limit=intent.limit,
+                confidence=95,
+                time_granularity=time_granularity,
+                time_table="associate_activity" if time_granularity else None,
+                time_column="activity_date" if time_granularity else None,
+            )
+
+        if (
+            re.search(associate_terms, q)
+            and re.search(availability_terms, q)
+            and re.search(r"\b(trend|monthly|by\s+month)\b", q)
+            and self._has_columns("associate_availability", "availability_id", "available_from")
+        ):
+            return QueryPlan(
+                main_table="associate_availability",
+                selected_columns=[],
+                joins=[],
+                filters=[],
+                aggregations=[{"function": "COUNT", "table": "associate_availability", "column": "availability_id", "alias": "availability_count"}],
+                group_by=[("associate_availability", "available_from")],
+                order_by=("associate_availability.available_from", "ASC"),
+                limit=intent.limit,
+                confidence=95,
+                time_granularity="month",
+                time_table="associate_availability",
+                time_column="available_from",
+            )
+
+        if (
+            re.search(associate_terms, q)
+            and re.search(availability_terms, q)
+            and self._has_columns("associate_availability", "associate_id", "available_from", "available_to", "capacity_percent")
+            and self._has_columns("associates", "associate_id", "associate_name")
+        ):
+            filters: list[dict[str, str]] = []
+            if re.search(r"\bavailable\b", q):
+                filters.append({"table": "associate_availability", "column": "availability_status", "operator": "=", "value": "available"})
+            if intent.time_range:
+                filters.append({"table": "associate_availability", "column": "available_from", "operator": intent.time_range, "value": ""})
+            selected_columns = [("associates", "associate_name")]
+            if re.search(r"\bbusiness\s+unit\b|\bpractice\b", q):
+                selected_columns.append(("associates", "business_unit"))
+            if re.search(r"\brole\b|\bdesignation\b", q):
+                selected_columns.append(("associates", "role_title"))
+            selected_columns.extend([
+                ("associate_availability", "capacity_percent"),
+                ("associate_availability", "available_from"),
+                ("associate_availability", "available_to"),
+                ("associate_availability", "availability_status"),
+            ])
+            return QueryPlan(
+                main_table="associate_availability",
+                selected_columns=selected_columns,
+                joins=self.joiner.discover("associate_availability", ["associates"]),
+                filters=filters,
+                aggregations=[],
+                group_by=[],
+                order_by=("associate_availability.available_from", "ASC"),
+                limit=intent.limit,
+                confidence=95,
+            )
+
         if (
             intent.time_range
-            and re.search(r"\b(associate|associates|staff|consultant|workforce)\b", q)
-            and re.search(r"\b(available|availability|capacity|bench|workload)\b", q)
+            and re.search(associate_terms, q)
+            and re.search(availability_terms, q)
             and self._has_columns(
                 "associate_availability",
                 "associate_id",
@@ -1286,6 +1453,7 @@ class QueryPlannerAgent:
 
     def _resolve_measure(self, query: str) -> tuple[str, str, str] | None:
         candidates = [
+            (r"\b(?:associate\s+)?(?:delivery\s+)?hours?\b|\bhours\s+logged\b", "associate_activity", "hours_logged", "delivery_hours"),
             (r"\b(hours?|time\s+spent|logged\s+time)\b", "time_logs", "hours_spent", "total_hours"),
             (r"\bbudgets?\b", "projects", "budget", "total_budget"),
             (r"\b(invoice|invoices|billed)\b.*\bamount\b|\binvoice\s+amount\b", "invoices", "amount", "total_invoice_amount"),
@@ -1348,6 +1516,10 @@ class QueryPlannerAgent:
             "payments": {"payment", "payments", "receipt", "receipts"},
             "sprints": {"sprint", "sprints"},
             "deployments": {"deployment", "deployments", "release", "releases"},
+            "associates": {"associate", "associates", "staff", "team member", "consultant", "workforce"},
+            "associate_assignments": {"associate assignment", "associate assignments", "staffing assignment", "project allocation"},
+            "associate_activity": {"associate activity", "associate activities", "delivery activity", "work log", "utilization"},
+            "associate_availability": {"associate availability", "associate availabilities", "available associate", "available staff", "capacity", "bench"},
         }
         for table, phrases in aliases.items():
             if table not in self.graph.tables:
@@ -1427,6 +1599,16 @@ class QueryPlannerAgent:
                 add("employees", "department")
         elif re.search(r"\bemployees?\b|\bstaff\b|\bperformers?\b", text):
             add("employees", "full_name", "employee_id")
+        if re.search(r"\bassociate(?:s)?\b|\bconsultant(?:s)?\b|\bteam\s+member(?:s)?\b", text):
+            add("associates", "associate_name", "associate_id")
+        if re.search(r"\bbusiness\s+unit\b|\bpractice\b", text):
+            add("associates", "business_unit")
+        if re.search(r"\brole\b|\bdesignation\b", text):
+            add("associates", "role_title")
+        if re.search(r"\ballocation\b", text):
+            add("associate_assignments", "allocation_percent")
+        if re.search(r"\bavailability\b|\bcapacity\b|\bbench\b", text):
+            add("associate_availability", "capacity_percent")
         if not has_tier and re.search(r"\bclients?\b|\bcustomers?\b", text):
             add("clients", "client_name", "client_id")
         if re.search(r"\bprojects?\b", text):
@@ -1729,6 +1911,11 @@ class SQLGenerationAgent:
             return "The schema does not have enough information to answer this query."
         if plan.ambiguity_options:
             return "Clarification required before SQL generation."
+
+        if plan.select_all and not plan.joins and not plan.filters and not plan.aggregations:
+            sql = f"SELECT *\nFROM {plan.main_table};"
+            self.last_alignment = self.audit_alignment(plan, sql)
+            return sql
 
         aliases = {plan.main_table: self.aliases.get(plan.main_table, plan.main_table[:1])}
         for rel in plan.joins:
@@ -2847,6 +3034,12 @@ class EnterpriseSQLCopilot:
             and str(deterministic_sql or "").lstrip().lower().startswith("select")
             and deterministic_alignment.get("aligned")
             and complexity in {"SIMPLE", "MODERATE"}
+        )
+        # A plain directory listing is already the exact, reviewed request.
+        # Do not let optional remote rewriting turn it back into a stale,
+        # hard-coded display-column projection.
+        deterministic_ready = deterministic_ready or bool(
+            plan and plan.select_all and deterministic_alignment.get("aligned")
         )
         if deterministic_ready:
             trace["skip_reason"] = "deterministic_plan_validated"
@@ -4463,9 +4656,10 @@ class EnterpriseSQLCopilot:
         missing_display = []
         sql_terms = set(_tokens(sql))
         selected_cols = [c for _, c in plan.selected_columns] if plan else []
-        for table, col in expected_display.items():
-            if col not in selected_cols and col not in sql_terms:
-                missing_display.append((table, col))
+        if not (plan and plan.select_all):
+            for table, col in expected_display.items():
+                if col not in selected_cols and col not in sql_terms:
+                    missing_display.append((table, col))
         components["missing_display_count"] = len(missing_display)
         components["missing_joins_count"] = len((join_path_report or {}).get("missing_joins", []))
         components["incomplete_joins_count"] = len((join_path_report or {}).get("incomplete_joins", []))

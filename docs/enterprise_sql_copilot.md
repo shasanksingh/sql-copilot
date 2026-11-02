@@ -33,6 +33,9 @@ flowchart LR
   F -->|accepted| O[Optimization]
   O --> R[Explainable Response]
   R --> C
+  R --> T[LangSmith trace metadata]
+  R --> M[Prometheus metrics]
+  M --> D[Grafana operational dashboard]
 ```
 
 ## Repository Modules
@@ -80,6 +83,7 @@ tests/
 - Confidence Coordination combines planner, validator, resolver, and coverage evidence.
 - Optimization returns rewritten SQL guidance, explanation, execution plan, estimated cost reduction, and index suggestions.
 - Explainability exposes intent, entities, tables, joins, plan, validation, confidence, coverage, runtime counters, and clarification options.
+- LangSmith tracing is optional and records redacted lifecycle metadata by default; Prometheus and Grafana provide aggregate throughput, latency, validation, cache, confidence, and provider-health visibility.
 
 ## API Integration
 

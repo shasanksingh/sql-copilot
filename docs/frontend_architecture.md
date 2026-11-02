@@ -55,7 +55,7 @@ composer
 
 Suggestions cannot overlap messages or the textarea because they participate in normal flex layout. The strip preserves the complete cross-domain prompt catalog after a response and prepends at most two context-aware prompts from the selected tables. The composer is sticky inside the card, remains visible after results, and stays within mobile and desktop viewports. A message-end reference handles auto-scroll. Pending user messages keep the layout stable during requests, and long prose or highlighted SQL wraps instead of widening the page.
 
-Chat history persists in local UI storage with active-response state, search, per-message delete, clear, export, and explainability re-open controls. Auth credentials do not enter local storage.
+Chat history persists in local UI storage with active-response state, search, per-message delete, clear, reviewed-SQL download, and explainability re-open controls. The download action writes only valid reviewed statements to a `.sql` file; it excludes prompts, provider/model information, traces, user records, and other internal UI metadata. Auth credentials do not enter local storage.
 
 ## Product Views
 

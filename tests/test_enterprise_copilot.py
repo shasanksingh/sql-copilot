@@ -120,7 +120,7 @@ def test_employee_details_with_an_unlisted_employer_value_routes_to_dynamic_draf
     assert "generic_context:employment:northstar systems" in result.plan["unresolved_terms"]
 
 
-def test_customer_details_selects_default_detail_columns(tmp_path: Path) -> None:
+def test_simple_customer_details_selects_all_columns(tmp_path: Path) -> None:
     copilot = EnterpriseSQLCopilot(
         tables={"clients"},
         columns={
@@ -153,9 +153,7 @@ def test_customer_details_selects_default_detail_columns(tmp_path: Path) -> None
     result = copilot.run("Give details of all customer", allow_cache=False)
 
     assert result.valid is True
-    assert "FROM clients c" in result.sql
-    for column in ["client_id", "client_name", "tier", "contact_email", "industry", "created_at"]:
-        assert f"c.{column}" in result.sql
+    assert result.sql == "SELECT *\nFROM clients;"
     assert result.coverage_report["entity"]["missing"] == []
     assert result.coverage_report["semantic"]["missing"] == []
 

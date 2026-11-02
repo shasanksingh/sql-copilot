@@ -5,6 +5,7 @@ The backend is a Flask application exposed through ASGI. Root `main.py` remains 
 ```text
 backend/
   app.py                       API, auth middleware, SQL orchestration, metrics
+  observability.py             optional LangSmith tracing and Prometheus metrics
   auth.py                      identity, sessions, resets, feedback, structured logs
   llm_providers.py             provider selection and fallback policy
   runtime_config.py            relocatable runtime, cache, SQLite, model paths
@@ -65,6 +66,7 @@ Public:
 ```text
 GET  /
 GET  /health
+GET  /metrics
 GET  /legacy
 POST /auth/signup
 POST /auth/login
@@ -78,7 +80,6 @@ Authenticated:
 GET  /auth/me
 POST /auth/logout
 POST /sql
-GET  /metrics
 GET  /schema/catalog
 GET  /schema/relationships
 GET  /schema/er
@@ -168,9 +169,13 @@ The planner resolves common SQL behavior from schema metadata and query structur
 
 Coverage treats aggregate measure columns as selected query output and does not require display labels from every joined table in an aggregate result.
 
-## Metrics Contract
+## Observability Contract
 
-`GET /metrics` merges `agent_feedback` execution data with the nearest matching `agent_telemetry` event. Each trend point includes confidence, planner score, validator score, intent score, join score, validity, reward, execution time, query text, and timestamp. This lets the frontend calculate accurate range-scoped KPIs without converting reward into confidence.
+`GET /metrics` exposes Prometheus metrics for query throughput, duration, validation outcome, cache result, provider readiness, and response confidence. It is public only for an internal Prometheus scrape path and can be protected with `METRICS_BEARER_TOKEN`. Caddy blocks the metrics path on the public Oracle API hostname.
+
+`backend/observability.py` also creates an optional LangSmith chain run for each SQL request. `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` enable it. `LANGSMITH_REDACT_CONTENT=true` keeps prompts and SQL out of traces by default while retaining operational metadata such as duration, confidence, selected tables, validation, and cache state.
+
+The authenticated application metrics endpoint continues to provide dashboard trend data derived from agent feedback and telemetry. See [observability.md](observability.md) for the Prometheus metric names, Grafana profile, and privacy controls.
 
 ## Deployment Boundaries
 

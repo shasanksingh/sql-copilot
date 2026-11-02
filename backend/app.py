@@ -29,6 +29,7 @@ try:
     from backend.auth import AuthStore, SlidingWindowRateLimiter
     from backend.email_delivery import load_email_config, password_reset_url, send_password_reset_email, send_test_email
     from backend.llm_providers import SUPPORTED_PROVIDERS, create_llm_provider, load_provider_config
+    from backend.observability import SQLCopilotObservability
     from backend.runtime_config import configure_runtime_paths, env_path, load_dotenv_file, resolve_path
     from backend.spider_rag import SpiderTextSqlRag
     from backend.synthetic_enterprise_data import SchemaRequestRepository, SyntheticEnterpriseDataEngine
@@ -36,6 +37,7 @@ except ImportError:  # pragma: no cover - supports direct python backend/app.py 
     from auth import AuthStore, SlidingWindowRateLimiter
     from email_delivery import load_email_config, password_reset_url, send_password_reset_email, send_test_email
     from llm_providers import SUPPORTED_PROVIDERS, create_llm_provider, load_provider_config
+    from observability import SQLCopilotObservability
     from runtime_config import configure_runtime_paths, env_path, load_dotenv_file, resolve_path
     from spider_rag import SpiderTextSqlRag
     from synthetic_enterprise_data import SchemaRequestRepository, SyntheticEnterpriseDataEngine
@@ -178,6 +180,7 @@ http_client = (
 )
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="")
+OBSERVABILITY = SQLCopilotObservability()
 if CORS:
     CORS(
         app,
@@ -230,6 +233,7 @@ if os.getenv("BOOTSTRAP_ADMIN_EMAIL") and os.getenv("BOOTSTRAP_ADMIN_PASSWORD"):
 PUBLIC_PATHS = {
     "/",
     "/health",
+    "/metrics",
     "/favicon.ico",
     "/legacy",
     "/auth/login",
@@ -4288,7 +4292,16 @@ def health():
         "schema_tables": sorted(schema_tables),
         "columns": len(column_documents),
         "provider": LLM_PROVIDER_CLIENT.health_check(deep=False),
+        "observability": OBSERVABILITY.status(),
     })
+
+
+@app.get("/metrics")
+def metrics():
+    payload, status, content_type = OBSERVABILITY.metrics(request.headers.get("Authorization", ""))
+    response = make_response(payload, status)
+    response.headers["Content-Type"] = content_type
+    return response
 
 
 @app.get("/runtime/config")
@@ -4892,6 +4905,7 @@ def frontend_log_api():
 @app.route("/sql", methods=["GET", "POST", "OPTIONS"])
 @app.route("/sql/", methods=["GET", "POST", "OPTIONS"])
 def sql_api():
+    trace = None
     if request.method == "OPTIONS":
         return ("", 204)
 
@@ -4934,6 +4948,8 @@ def sql_api():
         if not query:
             return jsonify({"error": "query is required"}), 400
 
+        trace = OBSERVABILITY.begin_query(query, target_language)
+
         log_step("")
         log_step(f"[request] User query: {query}")
         result = generate_sql(query, user_session, target_language=target_language)
@@ -4943,14 +4959,18 @@ def sql_api():
         ):
             result = optimize_with_rl_feedback(query, result["sql"], result["insights"])
 
-        return jsonify({
+        response_payload = {
             "query": query,
             "sql": result["sql"],
             "message": "Your request was reviewed and prepared as a read-only statement.",
             "insights": result["insights"],
-        })
+        }
+        OBSERVABILITY.finish_query(trace, response_payload)
+        return jsonify(response_payload)
 
     except Exception as exc:
+        if trace is not None:
+            OBSERVABILITY.finish_query(trace, error=exc)
         log_step(f"[error] {exc}")
         return jsonify({"error": str(exc)}), 500
 

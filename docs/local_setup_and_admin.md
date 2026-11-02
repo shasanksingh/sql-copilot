@@ -99,6 +99,19 @@ Invoke-WebRequest -UseBasicParsing http://127.0.0.1:5000/health
 
 If this fails, start or restart Terminal 1 before trying signup again.
 
+## Optional Observability
+
+For local LangSmith tracing, add the backend-only values below to `.env` and restart the API. Do not put them in a `NEXT_PUBLIC_*` variable.
+
+```dotenv
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=
+LANGSMITH_PROJECT=sql-copilot-local
+LANGSMITH_REDACT_CONTENT=true
+```
+
+The default redaction setting keeps prompts and generated SQL out of traces. Prometheus/Grafana and Oracle VM instructions are in [observability.md](observability.md).
+
 ## Create Or Promote An Admin
 
 From the repository root:

@@ -33,6 +33,19 @@ After the Flask health endpoint responds at `https://api.example.com/health`:
 
 The backend's `FRONTEND_ORIGIN` and `FRONTEND_ORIGINS` must include the exact Worker URL shown in `.env.production.example`. If a custom Worker domain is added later, append it to `FRONTEND_ORIGINS` and rebuild the frontend with the custom URL.
 
+## Optional LangSmith and Grafana observability
+
+Set `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY`, and `LANGSMITH_PROJECT` in `.env.production` to enable redacted LangSmith lifecycle traces. Keep `LANGSMITH_REDACT_CONTENT=true` unless an approved data policy permits prompt and SQL content in a third-party trace workspace.
+
+The compose file includes Prometheus and Grafana behind an opt-in profile. Set a strong `GRAFANA_ADMIN_PASSWORD` first, then start it:
+
+```bash
+sudo docker compose --profile observability up -d --build
+sudo docker compose --profile observability ps
+```
+
+Grafana is deliberately bound only to `127.0.0.1:3000`; use an SSH tunnel to view it from your workstation. Prometheus scrapes Flask over Docker's private network and Caddy rejects public `/metrics` traffic. The profile adds memory and disk use, so on a 1 GB Always Free VM start it only after confirming that the API remains healthy. Full setup and privacy guidance: [`docs/observability.md`](../../docs/observability.md).
+
 ## Validate
 
 ```bash

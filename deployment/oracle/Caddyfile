@@ -1,3 +1,8 @@
 api.example.com {
+    # Prometheus is scraped over Docker's private network. Keep metrics off
+    # the public API hostname; access Grafana using an SSH tunnel.
+    @metrics path /metrics
+    respond @metrics "Metrics are not public." 403
+
     reverse_proxy 127.0.0.1:8000
 }

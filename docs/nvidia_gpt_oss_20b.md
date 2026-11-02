@@ -42,6 +42,7 @@ No API key, authorization header, credential, password, or session secret is sen
 - `GET /runtime/config` includes provider configuration and D-drive runtime paths.
 - `GET /diagnostics/provider` is admin-only and can optionally run `?deep=1`.
 - `GET /metrics` includes provider request count, success rate, fallback rate, p50/p95 latency, repair attempts, token usage when provided by the adapter, and sanitized error categories.
+- Optional LangSmith tracing captures the request lifecycle after SQL generation. With `LANGSMITH_REDACT_CONTENT=true` (the default), it does not send prompt text or generated SQL to the trace workspace.
 
 ## Model Role
 
@@ -55,3 +56,5 @@ The model receives only a bounded context:
 - deterministic SQL candidate
 
 The model returns structured JSON for plan review, SQL generation, SQL repair, and SQL critique. Generated SQL is accepted only after planner-alignment checks and the deterministic SQL validator approve it.
+
+For Prometheus metric names, Grafana setup, trace privacy, and the Oracle deployment profile, see [observability.md](observability.md).

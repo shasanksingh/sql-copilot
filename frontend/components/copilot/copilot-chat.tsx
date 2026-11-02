@@ -181,19 +181,25 @@ export function CopilotChat() {
   };
 
   const exportHistory = () => {
-    const blob = new Blob([
-      JSON.stringify({
-        exported_at: new Date().toISOString(),
-        conversations: history
-      }, null, 2)
-    ], { type: "application/json" });
+    // Keep exports useful to the person who asked the questions. The browser
+    // history also carries UI telemetry, validation details, and provider
+    // metadata, none of which belongs in a SQL hand-off.
+    const statements = history
+      .filter((item) => isSqlAnswer(item) && item.insights.valid && !item.insights.generic_sql)
+      .map((item) => item.sql.trim())
+      .filter(Boolean);
+    if (!statements.length) {
+      pushToast({ title: "No reviewed SQL to download", description: "Generate a reviewed SQL statement first.", variant: "warning" });
+      return;
+    }
+    const blob = new Blob([`${statements.join("\n\n")}\n`], { type: "application/sql;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `sql-copilot-chats-${new Date().toISOString().slice(0, 10)}.json`;
+    anchor.download = `sql-copilot-queries-${new Date().toISOString().slice(0, 10)}.sql`;
     anchor.click();
     URL.revokeObjectURL(url);
-    pushToast({ title: "Chats exported", variant: "success" });
+    pushToast({ title: "SQL download ready", description: `${statements.length} reviewed statement${statements.length === 1 ? "" : "s"} exported.`, variant: "success" });
   };
 
   return (
@@ -214,7 +220,7 @@ export function CopilotChat() {
                 aria-label="Search chats"
               />
             </div>
-            <Button title="Export chats" aria-label="Export chats" variant="outline" className="h-8 w-8 px-0" onClick={exportHistory} disabled={!history.length}>
+            <Button title="Download reviewed SQL" aria-label="Download reviewed SQL" variant="outline" className="h-8 w-8 px-0" onClick={exportHistory} disabled={!history.some((item) => isSqlAnswer(item) && item.insights.valid && !item.insights.generic_sql)}>
               <Download className="h-4 w-4" />
             </Button>
             <Button title="Clear chat history" aria-label="Clear chat history" variant="outline" className="h-8 w-8 px-0" onClick={clearHistory} disabled={!history.length}>
