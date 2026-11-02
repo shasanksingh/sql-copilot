@@ -150,7 +150,7 @@ def test_simple_customer_details_selects_all_columns(tmp_path: Path) -> None:
         state_db_path=tmp_path / "agent.sqlite",
     )
 
-    result = copilot.run("Give details of all customer", allow_cache=False)
+    result = copilot.run("Show all customer details", allow_cache=False)
 
     assert result.valid is True
     assert result.sql == "SELECT *\nFROM clients;"

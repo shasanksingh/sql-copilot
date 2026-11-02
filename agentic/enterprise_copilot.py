@@ -915,7 +915,27 @@ class QueryPlannerAgent:
         }
         if set(_tokens(q)) & disallowed:
             return False
-        return not self._explicit_requested_columns(main_table, entities)
+
+        # Entity linking quite reasonably maps a table word such as
+        # "customer" to `client_id` / `client_name`.  That is not, however,
+        # a request for those individual fields.  For a plain "show all
+        # customer details" request, preserve the expected directory shape
+        # (`SELECT *`) rather than turning the table match into a hard-coded
+        # projection.  Only a genuinely column-specific word opts out.
+        query_terms = set(_tokens(q))
+        table_terms = set(_tokens(main_table)) | set(_tokens(_singular(main_table)))
+        label = self.labels.get(main_table, "")
+        table_terms.update(_tokens(label))
+        generic_terms = {
+            "all", "detail", "details", "record", "records", "entry", "entries",
+            "data", "information", "show", "list", "display", "get", "give", "fetch",
+            "id", "identifier",
+        }
+        for column in self.graph.column_order.get(main_table, []):
+            column_specific_terms = set(_tokens(column)) - table_terms - generic_terms
+            if column_specific_terms & query_terms:
+                return False
+        return True
 
     def _contextual_text_filters(
         self,
