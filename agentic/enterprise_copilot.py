@@ -42,7 +42,9 @@ except ImportError:  # pragma: no cover
 
 
 TokenSet = set[str]
-QUERY_CACHE_VERSION = "enterprise-v14"
+# Bump when planner semantics change so a formerly reviewed response cannot
+# outlive a schema/query-behaviour correction (for example SELECT * listings).
+QUERY_CACHE_VERSION = "enterprise-v15"
 
 
 def _tokens(text: str) -> list[str]:
