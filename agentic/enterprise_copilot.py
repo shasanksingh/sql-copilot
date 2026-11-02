@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
 TokenSet = set[str]
 # Bump when planner semantics change so a formerly reviewed response cannot
 # outlive a schema/query-behaviour correction (for example SELECT * listings).
-QUERY_CACHE_VERSION = "enterprise-v15"
+QUERY_CACHE_VERSION = "enterprise-v16"
 
 
 def _tokens(text: str) -> list[str]:
@@ -1108,6 +1108,51 @@ class QueryPlannerAgent:
                 time_granularity=time_granularity,
                 time_table="associate_activity" if time_granularity else None,
                 time_column="activity_date" if time_granularity else None,
+            )
+
+        if (
+            re.search(associate_terms, q)
+            and re.search(availability_terms, q)
+            and re.search(r"\bcount\b", q)
+            and re.search(r"\bby\s+(?:availability\s+)?status\b", q)
+            and self._has_columns("associate_availability", "availability_id", "availability_status")
+        ):
+            return QueryPlan(
+                main_table="associate_availability",
+                selected_columns=[("associate_availability", "availability_status")],
+                joins=[],
+                filters=[],
+                aggregations=[{
+                    "function": "COUNT",
+                    "table": "associate_availability",
+                    "column": "availability_id",
+                    "alias": "availability_count",
+                }],
+                group_by=[("associate_availability", "availability_status")],
+                order_by=("availability_count", "DESC"),
+                limit=intent.limit,
+                confidence=96,
+            )
+
+        if (
+            re.fullmatch(
+                r"(?:list|show|display|get)(?:\s+all)?\s+(?:associate\s+)?availability"
+                r"(?:\s+(?:details?|records?|entries|data))?",
+                q.strip(),
+            )
+            and self._has_columns("associate_availability", "availability_id")
+        ):
+            return QueryPlan(
+                main_table="associate_availability",
+                selected_columns=[],
+                joins=[],
+                filters=[],
+                aggregations=[],
+                group_by=[],
+                order_by=None,
+                limit=None,
+                confidence=96,
+                select_all=True,
             )
 
         if (

@@ -107,6 +107,8 @@ def test_associate_requests_produce_distinct_schema_grounded_sql(tmp_path: Path)
 
     availability = copilot.run("Show available associates by business unit", allow_cache=False)
     activity = copilot.run("List associate activity", allow_cache=False)
+    availability_listing = copilot.run("List associate availability", allow_cache=False)
+    availability_status_count = copilot.run("Count associate availability by availability status", allow_cache=False)
     delivery = copilot.run("Delivery hours by project this month", allow_cache=False)
     trend = copilot.run("Trend associate availability by month", allow_cache=False)
 
@@ -118,6 +120,16 @@ def test_associate_requests_produce_distinct_schema_grounded_sql(tmp_path: Path)
     assert activity.valid is True
     assert activity.sql == "SELECT *\nFROM associate_activity;"
     assert activity.sql != availability.sql
+
+    assert availability_listing.valid is True
+    assert availability_listing.sql == "SELECT *\nFROM associate_availability;"
+    assert availability_listing.sql != availability.sql
+
+    assert availability_status_count.valid is True
+    assert "av.availability_status" in availability_status_count.sql
+    assert "COUNT(av.availability_id) AS availability_count" in availability_status_count.sql
+    assert "GROUP BY av.availability_status" in availability_status_count.sql
+    assert availability_status_count.sql != availability.sql
 
     assert delivery.valid is True
     assert "SUM(act.hours_logged) AS delivery_hours" in delivery.sql
