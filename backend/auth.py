@@ -334,6 +334,75 @@ class AuthStore:
             raise RuntimeError("User role update failed.")
         return public_user(row)
 
+    def list_users(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM users
+                ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, created_at DESC
+                """
+            ).fetchall()
+        return [public_user(row) for row in rows]
+
+    def update_user_access(
+        self,
+        user_id: int,
+        *,
+        role: str | None = None,
+        is_active: bool | None = None,
+    ) -> dict[str, Any]:
+        if role is not None and role not in {"user", "admin"}:
+            raise ValueError("Role must be user or admin.")
+        with self._connect() as conn:
+            current = conn.execute("SELECT * FROM users WHERE id = ?", (int(user_id),)).fetchone()
+            if current is None:
+                raise ValueError("User account not found.")
+            next_role = role if role is not None else str(current["role"])
+            next_active = int(bool(is_active)) if is_active is not None else int(current["is_active"])
+            if str(current["role"]) == "admin" and (next_role != "admin" or not next_active):
+                active_admins = conn.execute(
+                    "SELECT COUNT(*) FROM users WHERE role = 'admin' AND is_active = 1"
+                ).fetchone()[0]
+                if int(active_admins) <= 1:
+                    raise ValueError("The final active administrator cannot be disabled or demoted.")
+            conn.execute(
+                "UPDATE users SET role = ?, is_active = ?, updated_at = ? WHERE id = ?",
+                (next_role, next_active, isoformat(utc_now()), int(user_id)),
+            )
+            if not next_active:
+                conn.execute(
+                    "UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+                    (isoformat(utc_now()), int(user_id)),
+                )
+            updated = conn.execute("SELECT * FROM users WHERE id = ?", (int(user_id),)).fetchone()
+        if updated is None:
+            raise RuntimeError("User access update failed.")
+        return public_user(updated)
+
+    def list_audit_logs(self, limit: int = 100) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(int(limit), 500))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT a.id, a.user_id, a.event, a.level, a.details, a.ip_address,
+                       a.created_at, u.name AS user_name, u.email AS user_email
+                FROM audit_logs a
+                LEFT JOIN users u ON u.id = a.user_id
+                ORDER BY a.id DESC
+                LIMIT ?
+                """,
+                (safe_limit,),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["details"] = json.loads(str(item.get("details") or "{}"))
+            except json.JSONDecodeError:
+                item["details"] = {}
+            result.append(item)
+        return result
+
     def authenticate_with_reason(self, email: str, password: str) -> tuple[dict[str, Any] | None, str]:
         with self._connect() as conn:
             row = conn.execute(

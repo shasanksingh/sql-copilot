@@ -33,6 +33,11 @@ instance/
 *.sqlite3
 *.sqlite3-*
 
+# Confidential business source material and derived private catalogs.
+# These files are loaded only at runtime by the administrator schema scope.
+/Custody Schema/
+/private-schema/
+
 # Runtime logs and generated reports
 logs/*
 !logs/.gitkeep

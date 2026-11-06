@@ -47,6 +47,15 @@ The Flask backend serves the SQL copilot, authentication, schema governance, liv
 | `POST` | `/schema/studio/apply-request/<id>` | Apply generated proposal to live metadata |
 | `GET` | `/feedback` | Review all feedback |
 | `GET` | `/diagnostics/provider` | Provider health and sanitized LLM metrics |
+| `GET` | `/admin/private-schema` | Inspect the confidential runtime catalog and local embedding status |
+| `POST` | `/admin/private-schema/import` | Import a validated private JSON catalog (2 MB maximum) |
+| `POST` | `/admin/private-schema/reindex` | Rebuild the on-host private retrieval index |
+| `POST` | `/admin/private-schema/search` | Test private schema retrieval without exposing it to ordinary users |
+| `GET` | `/admin/users` | List accounts and current access state |
+| `PATCH` | `/admin/users/<id>` | Change an account role or active state |
+| `GET` | `/admin/audit-logs` | Review recent administrator audit events |
+
+Private catalog endpoints and private tables in `/schema/*` are role-scoped to administrators. Private embeddings are generated locally. When `PRIVATE_SCHEMA_ALLOW_REMOTE_LLM=0`, administrator prompts also bypass remote model calls and shared LangSmith/Grafana query traces.
 
 Unsafe authenticated methods require the `sql_copilot_csrf` cookie value in `X-CSRF-Token`.
 

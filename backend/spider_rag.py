@@ -211,7 +211,7 @@ class SpiderTextSqlRag:
         if not self.available or not self.looks_like_text_to_sql(query):
             return None
         examples = self.retrieve(query, k=k)
-        if not examples:
+        if not examples and not schema_anchor:
             return None
 
         started = time.perf_counter()
@@ -223,7 +223,7 @@ class SpiderTextSqlRag:
             "fallback_reason": "",
             "stages": [],
         }
-        sql = str(examples[0]["sql_command"])
+        sql = str(examples[0]["sql_command"]) if examples else ""
         explanation = "Used the closest Spider text-to-SQL example as a generic SQL pattern."
         confidence = 62.0
 

@@ -1520,7 +1520,7 @@ class QueryPlannerAgent:
 
     def _resolve_measure(self, query: str) -> tuple[str, str, str] | None:
         candidates = [
-            (r"\b(?:associate\s+)?(?:delivery\s+)?hours?\b|\bhours\s+logged\b", "associate_activity", "hours_logged", "delivery_hours"),
+            (r"\b(?:associate\s+(?:delivery\s+)?hours?|delivery\s+hours?|hours\s+logged|utilization)\b", "associate_activity", "hours_logged", "delivery_hours"),
             (r"\b(hours?|time\s+spent|logged\s+time)\b", "time_logs", "hours_spent", "total_hours"),
             (r"\bbudgets?\b", "projects", "budget", "total_budget"),
             (r"\b(invoice|invoices|billed)\b.*\bamount\b|\binvoice\s+amount\b", "invoices", "amount", "total_invoice_amount"),
@@ -2513,11 +2513,13 @@ class EnterpriseSQLCopilot:
         confidence_low_threshold: int = 75,
         confidence_high_threshold: int = 90,
         max_join_depth: int | None = None,
+        cache_scope: str = "public",
     ) -> None:
         self.graph = SchemaGraphEngine(tables, columns, column_order, column_types, relationships)
         self.vocabulary = BusinessVocabularyEngine(state_db_path)
         self.llm_provider = llm_provider
-        self.cache_namespace = self._provider_cache_namespace(llm_provider)
+        safe_scope = re.sub(r"[^a-zA-Z0-9_.:-]+", "_", str(cache_scope or "public"))[:120]
+        self.cache_namespace = f"{self._provider_cache_namespace(llm_provider)}:{safe_scope}"
         self.cache = QueryCacheLayer(state_db_path, namespace=self.cache_namespace)
         self.intent_agent = IntentDetectionAgent()
         self.entity_agent = EntityExtractionAgent(self.vocabulary, value_filters)
@@ -3558,6 +3560,21 @@ class EnterpriseSQLCopilot:
                 "business_steps": ["Use security movements as the custody movement source."],
             }
 
+        if re.search(r"\b(detail|details|records?|profile|all)\b", q):
+            return {
+                "name": "custody_customer_details",
+                "main_table": "custody_position",
+                "selected_columns": [
+                    ("custody_position", column)
+                    for column in self.graph.column_order.get("custody_position", [])
+                ],
+                "filters": [],
+                "sql": "SELECT *\nFROM custody_position;",
+                "required": ["customer details", "custody_position"],
+                "matched": ["customer details", "custody_position"],
+                "complexity": "MODERATE",
+            }
+
         if re.search(r"\bcustody\s+positions?\b", q):
             return {
                 "name": "custody_positions_by_customer",
@@ -3689,18 +3706,6 @@ class EnterpriseSQLCopilot:
                 ),
                 "required": ["customer", "instrument_id", "credit_and_debit_flag"],
                 "matched": ["customer", "instrument_id", "credit_and_debit_flag"],
-                "complexity": "MODERATE",
-            }
-
-        if re.search(r"\b(detail|details|records?|profile|all)\b", q):
-            return {
-                "name": "custody_customer_details",
-                "main_table": "custody_position",
-                "selected_columns": [("custody_position", column) for column in self.graph.column_order.get("custody_position", [])],
-                "filters": [],
-                "sql": "SELECT *\nFROM custody_position;",
-                "required": ["customer details", "custody_position"],
-                "matched": ["customer details", "custody_position"],
                 "complexity": "MODERATE",
             }
 
@@ -4163,7 +4168,7 @@ class EnterpriseSQLCopilot:
                 ("custody_position", "custodian_id"),
                 ("custody_position", "custodian_account_number"),
                 ("custody_position", "currency"),
-                ("custody_position", "stock_exchange"),
+                ("custody_position", "stock_exchange_id"),
             ],
             joins=joins,
             filters=filters,
@@ -4512,6 +4517,26 @@ class EnterpriseSQLCopilot:
                     "workflow_engine": workflow_run.get("engine", self.workflow.engine),
                 }
                 return cached
+        custody_balance_result = self._run_custody_balance_logic(
+            query,
+            request_id,
+            run_started_at,
+            execution_trace,
+            allow_cache=allow_cache,
+        )
+        if custody_balance_result is not None:
+            return custody_balance_result
+        custody_rule = self._parse_custody_customer_rule(query)
+        custody_result = self._run_business_rule(
+            query,
+            request_id,
+            run_started_at,
+            execution_trace,
+            allow_cache=allow_cache,
+            rule=custody_rule,
+        )
+        if custody_result is not None:
+            return custody_result
         business_rule = parse_business_operations_rule(query, self.graph.tables)
         business_result = self._run_business_rule(
             query,

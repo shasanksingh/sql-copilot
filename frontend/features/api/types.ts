@@ -210,6 +210,18 @@ export type AuthUser = {
   has_security_question?: boolean;
 };
 
+export type AdminAuditLog = {
+  id: number;
+  user_id?: number | null;
+  user_name?: string | null;
+  user_email?: string | null;
+  event: string;
+  level: string;
+  details: Record<string, unknown>;
+  ip_address?: string | null;
+  created_at: string;
+};
+
 export type SqlRepairIssue = {
   kind: string;
   title: string;
@@ -399,6 +411,26 @@ export type SchemaCatalogResponse = {
     domains_count: number;
     supported_scales: string[];
   };
+};
+
+export type PrivateSchemaEmbeddingStatus = {
+  ready: boolean;
+  algorithm: string;
+  dimensions: number;
+  documents: number;
+  catalog_fingerprint: string;
+  built_at?: string | null;
+  remote_transfer: boolean;
+};
+
+export type PrivateSchemaResponse = {
+  classification: "confidential-admin-only";
+  enabled: boolean;
+  tables: SchemaCatalogTable[];
+  relationships: SchemaRelationship[];
+  embedding: PrivateSchemaEmbeddingStatus;
+  loaded_at?: string | null;
+  remote_llm_enabled: boolean;
 };
 
 export type EnterpriseSchemaResponse = {

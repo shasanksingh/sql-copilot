@@ -30,6 +30,7 @@ try:
     from backend.email_delivery import load_email_config, password_reset_url, send_password_reset_email, send_test_email
     from backend.llm_providers import SUPPORTED_PROVIDERS, create_llm_provider, load_provider_config
     from backend.observability import SQLCopilotObservability
+    from backend.private_schema import ConfidentialSchemaCatalog
     from backend.runtime_config import configure_runtime_paths, env_path, load_dotenv_file, resolve_path
     from backend.spider_rag import SpiderTextSqlRag
     from backend.synthetic_enterprise_data import SchemaRequestRepository, SyntheticEnterpriseDataEngine
@@ -38,6 +39,7 @@ except ImportError:  # pragma: no cover - supports direct python backend/app.py 
     from email_delivery import load_email_config, password_reset_url, send_password_reset_email, send_test_email
     from llm_providers import SUPPORTED_PROVIDERS, create_llm_provider, load_provider_config
     from observability import SQLCopilotObservability
+    from private_schema import ConfidentialSchemaCatalog
     from runtime_config import configure_runtime_paths, env_path, load_dotenv_file, resolve_path
     from spider_rag import SpiderTextSqlRag
     from synthetic_enterprise_data import SchemaRequestRepository, SyntheticEnterpriseDataEngine
@@ -113,9 +115,11 @@ load_dotenv_file(ROOT_DIR / ".env")
 RUNTIME_PATHS = configure_runtime_paths(ROOT_DIR)
 RUNTIME_PROVIDER_ENV_FILE = RUNTIME_PATHS.runtime_root / "secrets" / "provider.env"
 RUNTIME_EMAIL_ENV_FILE = RUNTIME_PATHS.runtime_root / "secrets" / "email.env"
+RUNTIME_ADMIN_ENV_FILE = RUNTIME_PATHS.runtime_root / "secrets" / "admin.env"
 if not _env_truthy("SQL_COPILOT_DISABLE_RUNTIME_SECRETS"):
     load_dotenv_file(RUNTIME_PROVIDER_ENV_FILE, override=True)
     load_dotenv_file(RUNTIME_EMAIL_ENV_FILE, override=True)
+    load_dotenv_file(RUNTIME_ADMIN_ENV_FILE, override=True)
 DATA_DIR = env_path("SQL_COPILOT_DATA_DIR", BASE_DIR / "data", RUNTIME_PATHS.project_root)
 STATIC_DIR = BASE_DIR / "static"
 
@@ -139,6 +143,12 @@ DYNAMIC_SCHEMA_FILE = env_path(
     RUNTIME_PATHS.runtime_root / "dynamic_schema.json",
     RUNTIME_PATHS.project_root,
 )
+PRIVATE_SCHEMA_FILE = env_path(
+    "PRIVATE_SCHEMA_FILE",
+    RUNTIME_PATHS.runtime_root / "private-schema" / "catalog.json",
+    RUNTIME_PATHS.project_root,
+)
+PRIVATE_SCHEMA_ALLOW_REMOTE_LLM = _env_truthy("PRIVATE_SCHEMA_ALLOW_REMOTE_LLM")
 
 DB_PATH = (
     str(env_path("SQL_COPILOT_EXECUTION_DB_PATH", RUNTIME_PATHS.sqlite_root / "execution.sqlite", RUNTIME_PATHS.project_root))
@@ -146,6 +156,11 @@ DB_PATH = (
     else None
 )
 FEEDBACK_DB_PATH = str(env_path("AGENT_FEEDBACK_DB_PATH", RUNTIME_PATHS.sqlite_root / "sql_agent_feedback.sqlite", RUNTIME_PATHS.project_root))
+PRIVATE_FEEDBACK_DB_PATH = str(env_path(
+    "PRIVATE_AGENT_FEEDBACK_DB_PATH",
+    RUNTIME_PATHS.sqlite_root / "private_sql_agent_feedback.sqlite",
+    RUNTIME_PATHS.project_root,
+))
 AUTH_DB_PATH = str(env_path("AUTH_DB_PATH", RUNTIME_PATHS.sqlite_root / "sql_copilot.db", RUNTIME_PATHS.project_root))
 AUTH_JWT_SECRET = os.getenv("AUTH_JWT_SECRET", "")
 SCHEMA_REQUEST_DB_PATH = str(resolve_path(os.getenv("SCHEMA_REQUEST_DB_PATH"), Path(AUTH_DB_PATH), RUNTIME_PATHS.project_root))
@@ -216,6 +231,7 @@ def log_step(message: str) -> None:
 ensure_feedback_table(FEEDBACK_DB_PATH)
 auth_store = AuthStore(Path(AUTH_DB_PATH), signing_secret=AUTH_JWT_SECRET)
 schema_request_repo = SchemaRequestRepository(Path(SCHEMA_REQUEST_DB_PATH))
+private_schema_catalog = ConfidentialSchemaCatalog(Path(PRIVATE_SCHEMA_FILE))
 synthetic_enterprise_engine = SyntheticEnterpriseDataEngine(
     int(os.getenv("ENTERPRISE_SYNTHETIC_TABLES", "180"))
 )
@@ -335,6 +351,7 @@ except ImportError:
 
 ppo_agent = None
 enterprise_copilot = None
+admin_enterprise_copilot = None
 spider_text_sql_rag = None
 
 
@@ -387,7 +404,7 @@ def _log_llm_status(provider_config, provider_client) -> None:
 
 def reload_llm_provider(*, reset_copilot: bool = True) -> dict[str, object]:
     global PROVIDER_CONFIG, USE_REMOTE_LLM, BASE_URL, API_KEY, MAX_RETRIES
-    global http_client, embeddings, LLM_PROVIDER_CLIENT, llm, enterprise_copilot
+    global http_client, embeddings, LLM_PROVIDER_CLIENT, llm, enterprise_copilot, admin_enterprise_copilot
 
     old_http_client = globals().get("http_client")
     if old_http_client is not None:
@@ -411,6 +428,7 @@ def reload_llm_provider(*, reset_copilot: bool = True) -> dict[str, object]:
     llm = LLM_PROVIDER_CLIENT.chat_client if LLM_PROVIDER_CLIENT.available else None
     if reset_copilot and "enterprise_copilot" in globals():
         enterprise_copilot = None
+        admin_enterprise_copilot = None
     _log_llm_status(PROVIDER_CONFIG, LLM_PROVIDER_CLIENT)
     return LLM_PROVIDER_CLIENT.health_check(deep=False)
 
@@ -1483,7 +1501,7 @@ metadata_refresh_status: dict[str, object] = {
 
 
 def refresh_metadata_engine(reason: str = "manual") -> dict[str, object]:
-    global table_vs, column_vs, faiss_table_ret, faiss_col_ret, bm25_ret, enterprise_copilot
+    global table_vs, column_vs, faiss_table_ret, faiss_col_ret, bm25_ret, enterprise_copilot, admin_enterprise_copilot
 
     if BM25Retriever:
         bm25_ret = BM25Retriever.from_documents(table_documents)
@@ -1510,6 +1528,7 @@ def refresh_metadata_engine(reason: str = "manual") -> dict[str, object]:
     if "sync_dynamic_query_hints" in globals():
         sync_dynamic_query_hints()
     enterprise_copilot = None
+    admin_enterprise_copilot = None
     metadata_refresh_status.update({
         "version": int(metadata_refresh_status.get("version", 0)) + 1,
         "last_refreshed_at": datetime.now(timezone.utc).isoformat(),
@@ -1928,7 +1947,13 @@ def _apply_target_language(response: dict[str, object], target_language: str) ->
     return result
 
 
-def validate_sql(sql: str) -> tuple[bool, str]:
+def validate_sql_against_schema(
+    sql: str,
+    allowed_tables: set[str],
+    allowed_columns: dict[str, set[str]],
+    *,
+    allow_single_table_wildcard: bool = True,
+) -> tuple[bool, str]:
     sql_lower = sql.lower().strip()
     if not sql_lower:
         return False, "SQL is empty"
@@ -1946,7 +1971,7 @@ def validate_sql(sql: str) -> tuple[bool, str]:
         return False, "SQL must include a FROM table"
 
     for table in used_tables:
-        if table not in schema_tables:
+        if table not in allowed_tables:
             return False, f"Unknown table: '{table}'"
 
     if sqlglot is not None:
@@ -1962,14 +1987,16 @@ def validate_sql(sql: str) -> tuple[bool, str]:
                 table_ref = col_expr.table.lower() if col_expr.table else None
 
                 if col_name == "*":
-                    return False, "Wildcard SELECT is not allowed; use explicit columns"
+                    if allow_single_table_wildcard and len(used_tables) == 1:
+                        continue
+                    return False, "Wildcard SELECT is allowed only for an unfiltered single-table detail request"
 
                 if table_ref:
                     real_table = alias_map.get(table_ref, table_ref)
-                    if real_table not in schema_columns:
+                    if real_table not in allowed_columns:
                         return False, f"Unknown table or alias reference: '{table_ref}'"
-                    if real_table in schema_columns:
-                        if col_name not in schema_columns[real_table]:
+                    if real_table in allowed_columns:
+                        if col_name not in allowed_columns[real_table]:
                             alias_note = (
                                 f" (via alias '{table_ref}')"
                                 if table_ref != real_table else ""
@@ -1983,7 +2010,7 @@ def validate_sql(sql: str) -> tuple[bool, str]:
                         continue
                     matches = [
                         table for table in used_tables
-                        if col_name in schema_columns.get(table, set())
+                        if col_name in allowed_columns.get(table, set())
                     ]
                     if len(matches) > 1:
                         return False, (
@@ -2000,6 +2027,10 @@ def validate_sql(sql: str) -> tuple[bool, str]:
         log_step("[deps] sqlglot missing; using table-only SQL validation")
 
     return True, "Valid"
+
+
+def validate_sql(sql: str) -> tuple[bool, str]:
+    return validate_sql_against_schema(sql, schema_tables, schema_columns)
 
 
 def _repair_issue(kind: str, title: str, detail: str, severity: str, fix: str = "") -> dict[str, str]:
@@ -3449,10 +3480,75 @@ def generate_sql_fallback(query: str, docs: list[Document] | None = None) -> str
     return _single_table_sql(query_text, primary_table)
 
 
-def get_enterprise_copilot() -> EnterpriseSQLCopilot:
-    global enterprise_copilot
+def _copy_nested_hint_map(source: dict[str, dict[str, set[str]]]) -> dict[str, dict[str, set[str]]]:
+    return {
+        table: {column: set(values) for column, values in columns.items()}
+        for table, columns in source.items()
+    }
+
+
+def _admin_schema_components() -> dict[str, object]:
+    private = private_schema_catalog.copilot_components()
+    combined_columns = {table: set(columns) for table, columns in schema_columns.items()}
+    combined_columns.update({table: set(columns) for table, columns in private["columns"].items()})
+    combined_order = {table: list(columns) for table, columns in schema_column_order.items()}
+    combined_order.update({table: list(columns) for table, columns in private["column_order"].items()})
+    combined_types = {table: dict(columns) for table, columns in schema_column_types.items()}
+    combined_types.update({table: dict(columns) for table, columns in private["column_types"].items()})
+    combined_relationships = {table: list(items) for table, items in schema_graph.items()}
+    combined_relationships.update({table: list(items) for table, items in private["relationships"].items()})
+    combined_table_hints = {table: set(values) for table, values in TABLE_QUERY_HINTS.items()}
+    combined_table_hints.update({table: set(values) for table, values in private["table_hints"].items()})
+    combined_column_hints = _copy_nested_hint_map(COLUMN_QUERY_HINTS)
+    combined_column_hints.update(_copy_nested_hint_map(private["column_hints"]))
+    return {
+        "tables": set(schema_tables) | set(private["tables"]),
+        "columns": combined_columns,
+        "column_order": combined_order,
+        "column_types": combined_types,
+        "relationships": combined_relationships,
+        "table_hints": combined_table_hints,
+        "column_hints": combined_column_hints,
+        "aliases": {**TABLE_ALIASES, **private["aliases"]},
+        "defaults": {**DEFAULT_DISPLAY_COLUMNS, **private["defaults"]},
+        "labels": {**PRIMARY_LABEL_COLUMNS, **private["labels"]},
+    }
+
+
+def get_enterprise_copilot(*, admin: bool = False) -> EnterpriseSQLCopilot:
+    global enterprise_copilot, admin_enterprise_copilot
+    sync_dynamic_query_hints()
+    if admin and private_schema_catalog.enabled:
+        if admin_enterprise_copilot is None:
+            components = _admin_schema_components()
+            admin_validator = lambda sql: validate_sql_against_schema(
+                sql,
+                components["tables"],
+                components["columns"],
+            )
+            admin_enterprise_copilot = EnterpriseSQLCopilot(
+                tables=components["tables"],
+                columns=components["columns"],
+                column_order=components["column_order"],
+                column_types=components["column_types"],
+                relationships=components["relationships"],
+                table_hints=components["table_hints"],
+                column_hints=components["column_hints"],
+                value_filters=VALUE_FILTERS,
+                aliases=components["aliases"],
+                defaults=components["defaults"],
+                labels=components["labels"],
+                validator=admin_validator,
+                state_db_path=Path(PRIVATE_FEEDBACK_DB_PATH),
+                logs_root=RUNTIME_PATHS.logs_root / "private-admin",
+                llm_provider=LLM_PROVIDER_CLIENT if PRIVATE_SCHEMA_ALLOW_REMOTE_LLM else None,
+                max_generation_retries=MAX_RETRIES,
+                confidence_low_threshold=CONFIDENCE_THRESHOLD,
+                confidence_high_threshold=int(os.getenv("CONFIDENCE_HIGH_THRESHOLD", "90")),
+                cache_scope=f"admin-private:{private_schema_catalog.fingerprint[:16]}",
+            )
+        return admin_enterprise_copilot
     if enterprise_copilot is None:
-        sync_dynamic_query_hints()
         enterprise_copilot = EnterpriseSQLCopilot(
             tables=schema_tables,
             columns=schema_columns,
@@ -3472,6 +3568,7 @@ def get_enterprise_copilot() -> EnterpriseSQLCopilot:
             max_generation_retries=MAX_RETRIES,
             confidence_low_threshold=CONFIDENCE_THRESHOLD,
             confidence_high_threshold=int(os.getenv("CONFIDENCE_HIGH_THRESHOLD", "90")),
+            cache_scope="public",
         )
     return enterprise_copilot
 
@@ -3939,6 +4036,8 @@ def generate_sql(
     chat_session: SQLChatSession,
     max_retries: int = MAX_RETRIES,
     target_language: str = "sql",
+    *,
+    admin_scope: bool = False,
 ) -> dict[str, object]:
     intent = classify_query(user_query)
     if intent == "DANGEROUS":
@@ -3961,7 +4060,10 @@ def generate_sql(
             },
         }, target_language)
     if intent == "META":
-        sql = "-- Registered schema catalog\n" + "-- Tables: " + ", ".join(sorted(schema_tables))
+        available_tables = set(schema_tables)
+        if admin_scope and private_schema_catalog.enabled:
+            available_tables.update(private_schema_catalog.tables)
+        sql = "-- Registered schema catalog\n" + "-- Tables: " + ", ".join(sorted(available_tables))
         return _apply_target_language({
             "sql": sql,
             "insights": {
@@ -3972,7 +4074,7 @@ def generate_sql(
                 "source": "Schema metadata",
                 "attempts": 0,
                 "max_attempts": max_retries,
-                "tables": sorted(schema_tables),
+                "tables": sorted(available_tables),
                 "columns": [],
                 "query_type": "Metadata",
                 "confidence_not_applicable": True,
@@ -3983,8 +4085,11 @@ def generate_sql(
         }, target_language)
 
     normalised = rewrite_query(user_query)
-    result = get_enterprise_copilot().run(normalised or user_query)
-    generic_result = _spider_generic_sql_response(user_query, result, max_retries=max_retries)
+    copilot = get_enterprise_copilot(admin=True) if admin_scope else get_enterprise_copilot()
+    result = copilot.run(normalised or user_query)
+    generic_result = None
+    if not (admin_scope and private_schema_catalog.enabled and not PRIVATE_SCHEMA_ALLOW_REMOTE_LLM):
+        generic_result = _spider_generic_sql_response(user_query, result, max_retries=max_retries)
     if generic_result is not None:
         gate = generic_result.get("insights", {}).get("coverage_report", {}).get("enterprise_schema_gate", {})
         if gate.get("schema_anchor"):
@@ -4002,14 +4107,21 @@ def generate_sql(
     elif result.llm_trace.get("fallback_used"):
         source = "Enterprise deterministic planner with LLM fallback"
 
-    log_step(f"[enterprise] Source: {source}")
-    log_step(f"[enterprise] Complexity: {result.query_complexity} | Confidence: {result.confidence}/100 | Valid: {result.valid}")
-    if result.llm_trace.get("fallback_used"):
-        log_step(f"[enterprise] Fallback reason: {result.llm_trace.get('fallback_reason')}")
-    if result.clarification_required:
-        log_step(f"[enterprise] Clarification options: {result.clarification_options}")
+    confidential_admin_scope = admin_scope and private_schema_catalog.enabled
+    if confidential_admin_scope:
+        log_step(
+            "[enterprise] Confidential administrator result prepared "
+            f"(confidence={result.confidence}, valid={result.valid})"
+        )
     else:
-        log_step(f"[enterprise] SQL: {sql}")
+        log_step(f"[enterprise] Source: {source}")
+        log_step(f"[enterprise] Complexity: {result.query_complexity} | Confidence: {result.confidence}/100 | Valid: {result.valid}")
+        if result.llm_trace.get("fallback_used"):
+            log_step(f"[enterprise] Fallback reason: {result.llm_trace.get('fallback_reason')}")
+        if result.clarification_required:
+            log_step(f"[enterprise] Clarification options: {result.clarification_options}")
+        else:
+            log_step(f"[enterprise] SQL: {sql}")
     response = {
         "sql": sql,
         "insights": {
@@ -4387,8 +4499,22 @@ def provider_diagnostics_api():
 
 @app.get("/schema/catalog")
 def schema_catalog():
-    relationships = get_enterprise_copilot().relationship_map()
+    admin_scope = str(g.current_user.get("role") or "") == "admin"
+    relationships = get_enterprise_copilot(admin=admin_scope).relationship_map()
     tables = [schema_catalog_entry(table) for table in sorted(schema_tables)]
+    if admin_scope and private_schema_catalog.enabled:
+        for table in private_schema_catalog.admin_payload()["tables"]:
+            tables.append({
+                **table,
+                "row_count": "private",
+                "relationships": [
+                    item for item in private_schema_catalog.relationships
+                    if item["from_table"] == table["name"]
+                ],
+                "last_updated": private_schema_catalog.loaded_at,
+                "source": "confidential_runtime",
+                "classification": "confidential-admin-only",
+            })
     for table in tables:
         table["relationships"] = relationships.get(str(table["name"]), table["relationships"])
     enterprise_catalog = synthetic_enterprise_engine.generate_catalog()
@@ -4397,6 +4523,7 @@ def schema_catalog():
             "tables_count": len(tables),
             "relationships_count": sum(len(items) for items in relationships.values()),
             "dynamic_tables": len(dynamic_schema_tables),
+            "private_tables": len(private_schema_catalog.tables) if admin_scope else 0,
             "enterprise_virtual_tables": enterprise_catalog["summary"]["tables_count"],
             "enterprise_virtual_relationships": enterprise_catalog["summary"]["relationships_count"],
         },
@@ -4408,17 +4535,22 @@ def schema_catalog():
 
 @app.get("/schema/relationships")
 def schema_relationships():
+    admin_scope = str(g.current_user.get("role") or "") == "admin"
+    visible_tables = set(schema_tables)
+    if admin_scope:
+        visible_tables.update(private_schema_catalog.tables)
     return jsonify({
-        "tables": sorted(schema_tables),
-        "relationships": get_enterprise_copilot().relationship_map(),
+        "tables": sorted(visible_tables),
+        "relationships": get_enterprise_copilot(admin=admin_scope).relationship_map(),
     })
 
 
 @app.get("/schema/er")
 def schema_er_diagram():
+    admin_scope = str(g.current_user.get("role") or "") == "admin"
     return jsonify({
         "format": "mermaid",
-        "diagram": get_enterprise_copilot().er_diagram(),
+        "diagram": get_enterprise_copilot(admin=admin_scope).er_diagram(),
     })
 
 
@@ -4624,6 +4756,114 @@ def infer_uploaded_schema(filename: str, content: bytes) -> dict[str, object]:
             ) from exc
         return _dataframe_schema(frame.head(100), table_name=table_name, source_format="parquet")
     raise ValueError("Unsupported upload type.")
+
+
+@app.get("/admin/private-schema")
+@admin_required
+def admin_private_schema_api():
+    return jsonify({
+        **private_schema_catalog.admin_payload(),
+        "remote_llm_enabled": PRIVATE_SCHEMA_ALLOW_REMOTE_LLM,
+    })
+
+
+@app.post("/admin/private-schema/import")
+@admin_required
+def admin_private_schema_import_api():
+    global admin_enterprise_copilot
+    upload = request.files.get("file")
+    if upload and upload.filename:
+        if Path(upload.filename).suffix.lower() != ".json":
+            return jsonify({"error": "Confidential schema imports must use a JSON catalog."}), 400
+        content = upload.read(2_000_001)
+        if len(content) > 2_000_000:
+            return jsonify({"error": "Confidential schema catalog must be 2 MB or smaller."}), 413
+        try:
+            payload = json.loads(content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            return jsonify({"error": f"Invalid confidential schema JSON: {exc}"}), 400
+    else:
+        payload = request.get_json(silent=True) or {}
+    try:
+        result = private_schema_catalog.import_payload(payload)
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    admin_enterprise_copilot = None
+    auth_store.log(
+        "audit_logs",
+        "confidential_schema_imported",
+        user_id=g.current_user["id"],
+        details={
+            "tables_count": len(private_schema_catalog.tables),
+            "relationships_count": len(private_schema_catalog.relationships),
+            "fingerprint": private_schema_catalog.fingerprint[:16],
+        },
+        ip_address=_client_ip(),
+    )
+    return jsonify({
+        **result,
+        "remote_llm_enabled": PRIVATE_SCHEMA_ALLOW_REMOTE_LLM,
+    }), 201
+
+
+@app.post("/admin/private-schema/reindex")
+@admin_required
+def admin_private_schema_reindex_api():
+    result = private_schema_catalog.reindex()
+    auth_store.log(
+        "audit_logs",
+        "confidential_schema_reindexed",
+        user_id=g.current_user["id"],
+        details={"documents": result.get("documents"), "fingerprint": result.get("catalog_fingerprint")},
+        ip_address=_client_ip(),
+    )
+    return jsonify({"embedding": result})
+
+
+@app.post("/admin/private-schema/search")
+@admin_required
+def admin_private_schema_search_api():
+    payload = request.get_json(silent=True) or {}
+    query = " ".join(str(payload.get("query") or "").split())[:500]
+    if not query:
+        return jsonify({"error": "query is required"}), 400
+    return jsonify({"matches": private_schema_catalog.search(query, payload.get("limit") or 8)})
+
+
+@app.get("/admin/users")
+@admin_required
+def admin_users_api():
+    return jsonify({"users": auth_store.list_users()})
+
+
+@app.patch("/admin/users/<int:user_id>")
+@admin_required
+def admin_user_access_api(user_id: int):
+    payload = request.get_json(silent=True) or {}
+    if user_id == int(g.current_user["id"]) and payload.get("is_active") is False:
+        return jsonify({"error": "You cannot disable your current administrator session."}), 400
+    try:
+        updated = auth_store.update_user_access(
+            user_id,
+            role=str(payload["role"]) if "role" in payload else None,
+            is_active=bool(payload["is_active"]) if "is_active" in payload else None,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    auth_store.log(
+        "audit_logs",
+        "user_access_updated",
+        user_id=g.current_user["id"],
+        details={"target_user_id": user_id, "role": updated["role"], "is_active": updated["is_active"]},
+        ip_address=_client_ip(),
+    )
+    return jsonify({"user": updated})
+
+
+@app.get("/admin/audit-logs")
+@admin_required
+def admin_audit_logs_api():
+    return jsonify({"logs": auth_store.list_audit_logs(request.args.get("limit", 100))})
 
 
 @app.get("/metadata/status")
@@ -4948,16 +5188,35 @@ def sql_api():
         if not query:
             return jsonify({"error": "query is required"}), 400
 
-        trace = OBSERVABILITY.begin_query(query, target_language)
-
         log_step("")
-        log_step(f"[request] User query: {query}")
-        result = generate_sql(query, user_session, target_language=target_language)
+        admin_scope = str(g.current_user.get("role") or "") == "admin"
+        confidential_admin_scope = admin_scope and private_schema_catalog.enabled
+        if confidential_admin_scope:
+            # Keep private business prompts and SQL out of shared logs,
+            # LangSmith traces, and public query analytics.
+            log_step("[request] Confidential administrator query received")
+        else:
+            log_step(f"[request] User query: {query}")
+            trace = OBSERVABILITY.begin_query(query, target_language)
+        result = generate_sql(
+            query,
+            user_session,
+            target_language=target_language,
+            admin_scope=admin_scope,
+        )
+        uses_private_schema = bool(
+            admin_scope
+            and set(result.get("insights", {}).get("tables") or [])
+            & set(private_schema_catalog.tables)
+        )
         if (
             str(result.get("sql", "")).lower().strip().startswith("select")
             and not result.get("insights", {}).get("generic_sql")
+            and not uses_private_schema
         ):
             result = optimize_with_rl_feedback(query, result["sql"], result["insights"])
+        if uses_private_schema:
+            result.setdefault("insights", {})["schema_scope"] = "confidential-admin-only"
 
         response_payload = {
             "query": query,
@@ -4965,7 +5224,8 @@ def sql_api():
             "message": "Your request was reviewed and prepared as a read-only statement.",
             "insights": result["insights"],
         }
-        OBSERVABILITY.finish_query(trace, response_payload)
+        if trace is not None:
+            OBSERVABILITY.finish_query(trace, response_payload)
         return jsonify(response_payload)
 
     except Exception as exc:

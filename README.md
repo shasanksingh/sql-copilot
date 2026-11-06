@@ -407,6 +407,9 @@ $env:BOOTSTRAP_ADMIN_PASSWORD="ChangeThis1!"
 | `AUTH_JWT_SECRET` | Managed JWT signing secret for production. |
 | `SCHEMA_FILE` | Workbook schema source. |
 | `DYNAMIC_SCHEMA_FILE` | Live Schema Studio overlay. |
+| `PRIVATE_SCHEMA_FILE` | Runtime-only confidential catalog used by administrator sessions. |
+| `PRIVATE_AGENT_FEEDBACK_DB_PATH` | Separate state/cache database for confidential planning. |
+| `PRIVATE_SCHEMA_ALLOW_REMOTE_LLM` | Opt-in remote model access for confidential prompts; defaults to disabled. |
 | `SQL_COPILOT_RUNTIME_DIR` | Generated runtime directory. |
 | `SQL_COPILOT_CACHE_DIR` | Retrieval and process cache root. |
 | `SQL_COPILOT_SQLITE_DIR` | SQLite database root. |
@@ -466,6 +469,13 @@ DELETE /schema/studio/tables/<table>
 POST   /schema/studio/apply-request/<id>
 GET    /feedback
 GET    /diagnostics/provider
+GET    /admin/private-schema
+POST   /admin/private-schema/import
+POST   /admin/private-schema/reindex
+POST   /admin/private-schema/search
+GET    /admin/users
+PATCH  /admin/users/<id>
+GET    /admin/audit-logs
 ```
 
 ## Documentation
@@ -473,6 +483,7 @@ GET    /diagnostics/provider
 | Document | Focus |
 | --- | --- |
 | [docs/local_setup_and_admin.md](docs/local_setup_and_admin.md) | Local setup, admin bootstrap, ports, troubleshooting. |
+| [docs/private_admin_schema.md](docs/private_admin_schema.md) | Confidential schema vault, local embeddings, access boundaries, and deployment. |
 | [docs/backend_architecture.md](docs/backend_architecture.md) | API, auth, provider policy, runtime paths, dynamic metadata. |
 | [docs/frontend_architecture.md](docs/frontend_architecture.md) | App Router layout, state ownership, workspace views, UI shell. |
 | [docs/api_reference.md](docs/api_reference.md) | Endpoint contract. |

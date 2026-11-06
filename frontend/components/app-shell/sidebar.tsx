@@ -97,8 +97,8 @@ export const navItems: NavItem[] = [
     tone: "slate"
   },
   {
-    href: "/admin/schema-requests",
-    label: "Admin Review",
+    href: "/admin",
+    label: "Admin Console",
     icon: ShieldCheck,
     tone: "emerald",
     admin: true

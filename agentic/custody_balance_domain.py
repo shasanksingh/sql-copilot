@@ -71,7 +71,8 @@ CUSTODY_BALANCE_SCHEMA_TABLES: list[dict[str, object]] = [
             _column("custodian_id", "VARCHAR(40)", "Custodian business partner reference."),
             _column("custodian_account_number", "VARCHAR(80)", "Custodian account number assigned to the position."),
             _column("currency", "VARCHAR(12)", "Currency for the custody position."),
-            _column("stock_exchange", "VARCHAR(20)", "Stock exchange or trading market identifier."),
+            _column("stock_exchange_id", "VARCHAR(20)", "Stock exchange identifier used to match movements and blocks."),
+            _column("stock_exchange", "VARCHAR(20)", "Stock exchange or trading market display value."),
             _column("market", "NUMBER(4,0)", "Market domain identifier."),
             _column("place_of_settlement", "VARCHAR(40)", "Place of settlement for the custody position."),
             _column("pset", "VARCHAR(40)", "Participant settlement or place of settlement reference."),
@@ -87,6 +88,7 @@ CUSTODY_BALANCE_SCHEMA_TABLES: list[dict[str, object]] = [
             "position_number",
             "position_type",
             "instrument_id",
+            "stock_exchange_id",
             "stock_exchange",
             "custodian_id",
             "custodian_account_number",
@@ -223,7 +225,7 @@ CUSTODY_BALANCE_RELATIONSHIPS: list[dict[str, str]] = [
     {"from_table": "security_movement", "from_column": "custody_position_type", "to_table": "custody_position", "to_column": "position_type"},
     {"from_table": "security_movement", "from_column": "custodian_id", "to_table": "custody_position", "to_column": "custodian_id"},
     {"from_table": "security_movement", "from_column": "custodian_account_number", "to_table": "custody_position", "to_column": "custodian_account_number"},
-    {"from_table": "security_movement", "from_column": "stock_exchange_id", "to_table": "custody_position", "to_column": "stock_exchange"},
+    {"from_table": "security_movement", "from_column": "stock_exchange_id", "to_table": "custody_position", "to_column": "stock_exchange_id"},
     {"from_table": "security_movement", "from_column": "cost_price_currency", "to_table": "custody_position", "to_column": "currency"},
     {"from_table": "custody_block", "from_column": "business_partner_id", "to_table": "custody_position", "to_column": "business_partner_id"},
     {"from_table": "custody_block", "from_column": "portfolio_id", "to_table": "custody_position", "to_column": "portfolio_id"},
@@ -232,7 +234,7 @@ CUSTODY_BALANCE_RELATIONSHIPS: list[dict[str, str]] = [
     {"from_table": "custody_block", "from_column": "instrument_id", "to_table": "custody_position", "to_column": "instrument_id"},
     {"from_table": "custody_block", "from_column": "custodian_id", "to_table": "custody_position", "to_column": "custodian_id"},
     {"from_table": "custody_block", "from_column": "custodian_account_number", "to_table": "custody_position", "to_column": "custodian_account_number"},
-    {"from_table": "custody_block", "from_column": "stock_exchange_id", "to_table": "custody_position", "to_column": "stock_exchange"},
+    {"from_table": "custody_block", "from_column": "stock_exchange_id", "to_table": "custody_position", "to_column": "stock_exchange_id"},
     {"from_table": "custody_block", "from_column": "currency", "to_table": "custody_position", "to_column": "currency"},
 ]
 
@@ -282,6 +284,7 @@ CUSTODY_BALANCE_COLUMN_HINTS: dict[str, dict[str, set[str]]] = {
         "portfolio_id": {"portfolio id", "prtfl id", "portfolio reference"},
         "instrument_id": {"instrument id", "security id"},
         "currency": {"currency", "crncy"},
+        "stock_exchange_id": {"stock exchange id", "exchange id"},
         "stock_exchange": {"stock exchange", "exchange"},
     },
     "security_movement": {
@@ -458,7 +461,7 @@ def _settled_subquery(request: BalanceRequest, indent: str = "    ") -> list[str
         f"{indent}  AND sm.custody_position_type = cp.position_type",
         f"{indent}  AND (sm.custodian_id = cp.custodian_id OR sm.custodian_id IS NULL)",
         f"{indent}  AND (sm.custodian_account_number = cp.custodian_account_number OR sm.custodian_account_number IS NULL)",
-        f"{indent}  AND (sm.stock_exchange_id = cp.stock_exchange OR sm.stock_exchange_id IS NULL)",
+        f"{indent}  AND (sm.stock_exchange_id = cp.stock_exchange_id OR sm.stock_exchange_id IS NULL)",
         f"{indent}  AND (sm.cost_price_currency = cp.currency OR sm.cost_price_currency IS NULL)",
         f"{indent}  AND {_movement_date_condition(request)}",
     ]
@@ -476,7 +479,7 @@ def _blocked_subquery(request: BalanceRequest, indent: str = "    ") -> list[str
         f"{indent}  AND cb.position_type = cp.position_type",
         f"{indent}  AND (cb.custodian_id = cp.custodian_id OR cb.custodian_id IS NULL)",
         f"{indent}  AND (cb.custodian_account_number = cp.custodian_account_number OR cb.custodian_account_number IS NULL)",
-        f"{indent}  AND (cb.stock_exchange_id = cp.stock_exchange OR cb.stock_exchange_id IS NULL)",
+        f"{indent}  AND (cb.stock_exchange_id = cp.stock_exchange_id OR cb.stock_exchange_id IS NULL)",
         f"{indent}  AND (cb.currency = cp.currency OR cb.currency IS NULL)",
         f"{indent}  AND cb.block_valid_from_date <= {balance_date}",
         f"{indent}  AND (cb.block_release_date IS NULL OR cb.block_release_date > {balance_date})",
@@ -506,7 +509,7 @@ def build_available_balance_sql(request: BalanceRequest) -> str:
         "  cp.custodian_id,\n"
         "  cp.custodian_account_number,\n"
         "  cp.currency,\n"
-        "  cp.stock_exchange,\n"
+        "  cp.stock_exchange_id,\n"
         "  COALESCE((\n"
         f"{settled}\n"
         "  ), 0) AS settled_balance,\n"

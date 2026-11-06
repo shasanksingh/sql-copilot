@@ -20,7 +20,11 @@ import type {
   RuntimeConfigResponse,
   ConfigureEmailPayload,
   ConfigureEmailResponse,
-  SqlRepairResponse
+  SqlRepairResponse,
+  PrivateSchemaResponse,
+  PrivateSchemaEmbeddingStatus,
+  AdminAuditLog,
+  AuthUser
 } from "./types";
 import type { SqlLanguage } from "@/lib/sql-language";
 
@@ -282,6 +286,48 @@ export function createFeedback(category: string, message: string) {
 
 export function getFeedback() {
   return request<{ feedback: FeedbackItem[] }>("/feedback");
+}
+
+export function getPrivateSchema() {
+  return request<PrivateSchemaResponse>("/admin/private-schema");
+}
+
+export function importPrivateSchema(file: File) {
+  const formData = new FormData();
+  formData.set("file", file);
+  return request<PrivateSchemaResponse>("/admin/private-schema/import", {
+    method: "POST",
+    body: formData
+  });
+}
+
+export function reindexPrivateSchema() {
+  return request<{ embedding: PrivateSchemaEmbeddingStatus }>("/admin/private-schema/reindex", {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
+export function searchPrivateSchema(query: string, limit = 8) {
+  return request<{ matches: Array<{ kind: string; table: string; column?: string | null; score: number }> }>(
+    "/admin/private-schema/search",
+    { method: "POST", body: JSON.stringify({ query, limit }) }
+  );
+}
+
+export function getAdminUsers() {
+  return request<{ users: AuthUser[] }>("/admin/users");
+}
+
+export function updateAdminUser(userId: number, payload: { role?: AuthUser["role"]; is_active?: boolean }) {
+  return request<{ user: AuthUser }>(`/admin/users/${userId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function getAdminAuditLogs(limit = 100) {
+  return request<{ logs: AdminAuditLog[] }>(`/admin/audit-logs?limit=${limit}`);
 }
 
 export function logFrontendError(payload: {

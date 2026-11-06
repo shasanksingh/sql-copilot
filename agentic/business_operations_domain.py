@@ -135,7 +135,14 @@ def parse_business_operations_rule(
     mentions_project = bool(re.search(r"\b(project|projects|delivery)\b", q))
     mentions_client = bool(re.search(r"\b(client|clients|customer|customers)\b", q))
     wants_active = bool(re.search(r"\b(active|current|ongoing|open)\b", q))
-    if wants_active and mentions_project and mentions_client and {"projects", "clients"}.issubset(tables):
+    wants_client_tier_breakdown = bool(re.search(r"\b(?:by|per)\s+client\s+tier\b", q))
+    if (
+        wants_active
+        and mentions_project
+        and mentions_client
+        and not wants_client_tier_breakdown
+        and {"projects", "clients"}.issubset(tables)
+    ):
         return {
             "name": "business_active_projects_by_client",
             "domain_label": "Business Operations",
