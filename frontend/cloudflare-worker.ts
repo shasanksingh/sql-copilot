@@ -22,7 +22,8 @@ const API_PREFIXES = [
   "/metrics",
   "/health",
   "/runtime/",
-  "/diagnostics/"
+  "/diagnostics/",
+  "/admin/"
 ];
 
 function isApiRequest(pathname: string) {
