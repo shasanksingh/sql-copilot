@@ -8,7 +8,8 @@ The Flask backend serves the SQL copilot, authentication, schema governance, liv
 | --- | --- | --- |
 | `GET` | `/` | Service metadata and endpoint index |
 | `GET` | `/health` | Backend and loaded-schema health |
-| `GET` | `/metrics` | Prometheus operational metrics; optional bearer token protection |
+| `GET` | `/metrics` | Authenticated dashboard quality metrics as JSON |
+| `GET` | `/observability/metrics` | Prometheus operational metrics; optional bearer token protection |
 | `GET` | `/legacy` | Static legacy UI |
 | `POST` | `/auth/signup` | Create user, session, and CSRF cookie |
 | `POST` | `/auth/login` | Create session and CSRF cookie |
@@ -61,7 +62,7 @@ Unsafe authenticated methods require the `sql_copilot_csrf` cookie value in `X-C
 
 `POST /sql` remains backward-compatible and now adds optional fields under `insights`: `query_complexity`, `confidence_band`, `provider_status`, `llm_trace`, `model_confidence`, `planner_confidence`, `validator_confidence`, `coverage_confidence`, `fallback_used`, `fallback_reason`, and `repair_attempts`. API keys are never returned.
 
-`GET /metrics` emits Prometheus exposition data rather than chat/session history. It contains aggregate request, latency, validation, cache, provider-readiness, and confidence metrics. If `METRICS_BEARER_TOKEN` is configured, callers must include `Authorization: Bearer <token>`. See [observability.md](observability.md) for the metric contract and Grafana dashboard.
+`GET /observability/metrics` emits Prometheus exposition data rather than chat/session history. It contains aggregate request, latency, validation, cache, provider-readiness, and confidence metrics. If `METRICS_BEARER_TOKEN` is configured, callers must include `Authorization: Bearer <token>`. See [observability.md](observability.md) for the metric contract and Grafana dashboard.
 
 ## Schema Studio Payload
 

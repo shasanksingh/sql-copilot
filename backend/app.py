@@ -249,7 +249,7 @@ if os.getenv("BOOTSTRAP_ADMIN_EMAIL") and os.getenv("BOOTSTRAP_ADMIN_PASSWORD"):
 PUBLIC_PATHS = {
     "/",
     "/health",
-    "/metrics",
+    "/observability/metrics",
     "/favicon.ico",
     "/legacy",
     "/auth/login",
@@ -4385,7 +4385,13 @@ def legacy_ui():
         "service": "SQL Copilot API",
         "status": "ok",
         "frontend": "Run the Next.js app in ../frontend",
-        "endpoints": ["/sql", "/schema/relationships", "/schema/er", "/metrics"],
+        "endpoints": [
+            "/sql",
+            "/schema/relationships",
+            "/schema/er",
+            "/metrics",
+            "/observability/metrics",
+        ],
     })
 
 
@@ -4408,8 +4414,8 @@ def health():
     })
 
 
-@app.get("/metrics")
-def metrics():
+@app.get("/observability/metrics")
+def observability_metrics_api():
     payload, status, content_type = OBSERVABILITY.metrics(request.headers.get("Authorization", ""))
     response = make_response(payload, status)
     response.headers["Content-Type"] = content_type

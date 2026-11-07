@@ -171,7 +171,7 @@ Coverage treats aggregate measure columns as selected query output and does not 
 
 ## Observability Contract
 
-`GET /metrics` exposes Prometheus metrics for query throughput, duration, validation outcome, cache result, provider readiness, and response confidence. It is public only for an internal Prometheus scrape path and can be protected with `METRICS_BEARER_TOKEN`. Caddy blocks the metrics path on the public Oracle API hostname.
+`GET /observability/metrics` exposes Prometheus metrics for query throughput, duration, validation outcome, cache result, provider readiness, and response confidence. It is available only for the internal Prometheus scrape path and can be protected with `METRICS_BEARER_TOKEN`. Caddy blocks this observability path on the public Oracle API hostname, while `GET /metrics` serves authenticated dashboard JSON.
 
 `backend/observability.py` also creates an optional LangSmith chain run for each SQL request. `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` enable it. `LANGSMITH_REDACT_CONTENT=true` keeps prompts and SQL out of traces by default while retaining operational metadata such as duration, confidence, selected tables, validation, and cache state.
 

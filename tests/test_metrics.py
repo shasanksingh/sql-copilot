@@ -24,6 +24,30 @@ class _FakeProvider:
         }
 
 
+def test_dashboard_and_prometheus_metrics_use_distinct_routes() -> None:
+    app_module = importlib.import_module("backend.app")
+    app_module.app.config.update(TESTING=True)
+    client = app_module.app.test_client()
+
+    dashboard_rules = [
+        rule for rule in app_module.app.url_map.iter_rules() if rule.rule == "/metrics"
+    ]
+    observability_rules = [
+        rule
+        for rule in app_module.app.url_map.iter_rules()
+        if rule.rule == "/observability/metrics"
+    ]
+
+    assert [rule.endpoint for rule in dashboard_rules] == ["metrics_api"]
+    assert [rule.endpoint for rule in observability_rules] == ["observability_metrics_api"]
+    assert client.get("/metrics").status_code == 401
+
+    prometheus = client.get("/observability/metrics")
+    assert prometheus.status_code == 200
+    assert "text/plain" in prometheus.content_type
+    assert b"sql_copilot_query_requests_total" in prometheus.data
+
+
 def test_feedback_metrics_filters_selected_range(tmp_path: Path, monkeypatch) -> None:
     app_module = importlib.import_module("backend.app")
     db_path = tmp_path / "feedback.sqlite"

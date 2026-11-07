@@ -33,7 +33,7 @@ Each `POST /sql` request becomes a `sql-copilot.generate` chain run. The run cap
 
 ## Prometheus endpoint
 
-`GET /metrics` serves Prometheus exposition data. Set `METRICS_BEARER_TOKEN` to require `Authorization: Bearer <token>` for a direct request. On the Oracle bundle, Caddy explicitly blocks `/metrics` from the public API hostname; Prometheus scrapes the Flask container over the private Docker network instead.
+`GET /observability/metrics` serves Prometheus exposition data. Set `METRICS_BEARER_TOKEN` to require `Authorization: Bearer <token>` for a direct request. On the Oracle bundle, Caddy explicitly blocks `/observability/metrics` from the public API hostname; Prometheus scrapes the Flask container over the private Docker network instead. `GET /metrics` remains the authenticated JSON feed used by the application dashboard.
 
 Current metrics include:
 

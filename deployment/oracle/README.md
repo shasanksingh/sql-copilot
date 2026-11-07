@@ -44,7 +44,7 @@ sudo docker compose --profile observability up -d --build
 sudo docker compose --profile observability ps
 ```
 
-Grafana is deliberately bound only to `127.0.0.1:3000`; use an SSH tunnel to view it from your workstation. Prometheus scrapes Flask over Docker's private network and Caddy rejects public `/metrics` traffic. The profile adds memory and disk use, so on a 1 GB Always Free VM start it only after confirming that the API remains healthy. Full setup and privacy guidance: [`docs/observability.md`](../../docs/observability.md).
+Grafana is deliberately bound only to `127.0.0.1:3000`; use an SSH tunnel to view it from your workstation. Prometheus scrapes Flask over Docker's private network and Caddy rejects public `/observability/metrics` traffic. The profile adds memory and disk use, so on a 1 GB Always Free VM start it only after confirming that the API remains healthy. Full setup and privacy guidance: [`docs/observability.md`](../../docs/observability.md).
 
 ## Validate
 
