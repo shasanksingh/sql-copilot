@@ -19,6 +19,7 @@ Do not move the screenshots, catalog, embedding index, passwords, or private pla
 - Administrator schema responses merge public and private objects only for that administrator session.
 - Disabling or changing account roles revokes access according to the auth store, and the final active administrator cannot be removed.
 - Private administrator prompts bypass shared query traces and public analytics.
+- Confidential command telemetry remains in the private planner database. Administrators can review it from the dashboard using All, Public, or Confidential activity scopes; regular accounts are always restricted to public activity.
 
 ## Retrieval and model policy
 

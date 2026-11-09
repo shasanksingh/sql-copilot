@@ -116,6 +116,7 @@ export type FeedbackTrendPoint = {
   fallback_used?: boolean;
   retry_count?: number;
   latency_ms?: number;
+  visibility?: "public" | "confidential";
 };
 
 export type MetricsRange = {
@@ -195,6 +196,12 @@ export type MetricsResponse = {
     five_plus_table_success_rate: number;
     clarification_rate: number;
     fallback_rate: number;
+  };
+  access_scope?: "public" | "private" | "all";
+  admin_activity?: {
+    included: boolean;
+    public_events: number;
+    private_events: number;
   };
 };
 

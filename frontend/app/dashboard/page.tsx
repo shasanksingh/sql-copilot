@@ -43,6 +43,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getMetrics, getRelationships } from "@/features/api/client";
 import type { FeedbackTrendPoint, RelationshipResponse, SchemaRelationship } from "@/features/api/types";
+import { useAuth } from "@/features/auth/auth-provider";
 import { cn } from "@/lib/utils";
 import { Icon3D, type Icon3DTone } from "@/components/ui/icon-3d";
 
@@ -57,6 +58,7 @@ const ranges = [
 
 type RangeKey = typeof ranges[number]["key"];
 type RangeOption = typeof ranges[number];
+type ActivityScope = "all" | "public" | "private";
 type DashboardMetric = {
   key: string;
   label: string;
@@ -117,7 +119,9 @@ function readPersistedRange() {
 }
 
 export default function DashboardPage() {
+  const { user } = useAuth();
   const [range, setRange] = useState<RangeKey>("week");
+  const [activityScope, setActivityScope] = useState<ActivityScope>("all");
   const [rangeHydrated, setRangeHydrated] = useState(false);
   const [activeMetricKey, setActiveMetricKey] = useState<string | null>(null);
   const [relationshipsOpen, setRelationshipsOpen] = useState(false);
@@ -138,9 +142,11 @@ export default function DashboardPage() {
     }
   }, [range, rangeHydrated]);
 
+  const isAdmin = user?.role === "admin";
+  const effectiveActivityScope: ActivityScope = isAdmin ? activityScope : "public";
   const metricsQuery = useQuery({
-    queryKey: ["metrics", range],
-    queryFn: () => getMetrics(range),
+    queryKey: ["metrics", range, effectiveActivityScope],
+    queryFn: () => getMetrics(range, effectiveActivityScope),
     enabled: rangeHydrated,
     placeholderData: keepPreviousData,
     refetchInterval: rangeHydrated ? 10_000 : false,
@@ -360,6 +366,7 @@ export default function DashboardPage() {
           <>
             <Badge tone="cyan">{filteredTrend.length} events</Badge>
             <Badge tone="emerald">{percent(rangeMetrics.successRate)} success</Badge>
+            {isAdmin ? <Badge tone="indigo">Administrator analytics</Badge> : null}
           </>
         )}
         actions={(
@@ -387,6 +394,48 @@ export default function DashboardPage() {
           </>
         )}
       />
+      {isAdmin ? (
+        <Card className="mb-4 border-indigo-300/20">
+          <CardContent className="flex flex-wrap items-center justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="font-medium text-slate-950 dark:text-white">Administrator activity access</div>
+                <Badge tone="indigo">Admin only</Badge>
+              </div>
+              <div className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+                Review public activity and isolated confidential commands without exposing them to regular accounts.
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-500">
+                <span>{metrics?.admin_activity?.public_events ?? 0} public events</span>
+                <span aria-hidden="true">•</span>
+                <span>{metrics?.admin_activity?.private_events ?? 0} confidential events</span>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2" aria-label="Administrator activity scope">
+              {([
+                ["all", "All activity"],
+                ["public", "Public"],
+                ["private", "Confidential"]
+              ] as const).map(([value, label]) => (
+                <Button
+                  key={value}
+                  variant={activityScope === value ? "primary" : "outline"}
+                  className="h-9 px-3"
+                  onClick={() => setActivityScope(value)}
+                >
+                  {label}
+                </Button>
+              ))}
+              <Link
+                href="/admin"
+                className="inline-flex h-9 items-center justify-center rounded-md border border-indigo-300/25 bg-indigo-300/10 px-3 text-sm font-medium text-indigo-700 transition hover:bg-indigo-300/20 dark:text-indigo-100"
+              >
+                Admin Console
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
       {metricsQuery.isError || schemaQuery.isError ? (
         <Card className="mb-4 border-rose-300/20">
           <CardContent className="flex flex-wrap items-center justify-between gap-3">
@@ -439,6 +488,7 @@ export default function DashboardPage() {
                 <div className="mt-2 flex flex-wrap items-center gap-2 px-1 text-xs text-slate-500">
                   <Icon3D icon={item.valid ? CheckCircle2 : FileCode2} tone={item.valid ? "emerald" : "amber"} size="xs" />
                   <Badge tone={item.valid ? "emerald" : "amber"} className="h-6">{item.valid ? "Valid" : "Review"}</Badge>
+                  {item.visibility === "confidential" ? <Badge tone="indigo" className="h-6">Admin only</Badge> : null}
                   {item.fallback_used ? <Badge tone="amber" className="h-6">Alternative plan</Badge> : null}
                   <span>{Math.round(item.confidence)}% confidence</span>
                   <span>{Math.round(item.latency_ms ?? item.execution_time * 1000)}ms</span>

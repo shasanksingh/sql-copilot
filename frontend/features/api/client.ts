@@ -347,8 +347,14 @@ export function getErDiagram() {
   return request<ErResponse>("/schema/er");
 }
 
-export function getMetrics(range?: MetricsRange["key"]) {
-  const suffix = range ? `?range=${encodeURIComponent(range)}` : "";
+export function getMetrics(
+  range?: MetricsRange["key"],
+  scope?: "public" | "private" | "all"
+) {
+  const params = new URLSearchParams();
+  if (range) params.set("range", range);
+  if (scope) params.set("scope", scope);
+  const suffix = params.size ? `?${params.toString()}` : "";
   return request<MetricsResponse>(`/metrics${suffix}`);
 }
 

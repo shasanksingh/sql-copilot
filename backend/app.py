@@ -5326,14 +5326,20 @@ def _metrics_range_payload(range_key: str, days: int | None) -> dict[str, object
     }
 
 
-def load_agent_telemetry_metrics(days: int | None = None) -> dict:
-    with sqlite3.connect(FEEDBACK_DB_PATH) as conn:
+def load_agent_telemetry_metrics(
+    days: int | None = None,
+    *,
+    db_path: str | Path | None = None,
+) -> dict:
+    telemetry_db_path = str(db_path or FEEDBACK_DB_PATH)
+    with sqlite3.connect(telemetry_db_path) as conn:
         conn.row_factory = sqlite3.Row
         exists = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_telemetry'"
         ).fetchone()
         if not exists:
             return {
+                "total": 0,
                 "intent_accuracy": 0,
                 "planner_accuracy": 0,
                 "validation_accuracy": 0,
@@ -5376,6 +5382,7 @@ def load_agent_telemetry_metrics(days: int | None = None) -> dict:
     rows = _filter_metrics_by_range(rows, days, lambda row: row["timestamp"])
     if not rows:
         return {
+            "total": 0,
             "intent_accuracy": 0,
             "planner_accuracy": 0,
             "validation_accuracy": 0,
@@ -5403,6 +5410,7 @@ def load_agent_telemetry_metrics(days: int | None = None) -> dict:
     validator_metric = avg("validator_confidence") if has_signal("validator_confidence") else avg("semantic_score")
     coverage_metric = avg("coverage_confidence") if has_signal("coverage_confidence") else avg("confidence")
     return {
+        "total": len(rows),
         "intent_accuracy": avg("intent_score"),
         "planner_accuracy": planner_metric,
         "validation_accuracy": validator_metric,
@@ -5442,9 +5450,15 @@ def load_agent_telemetry_metrics(days: int | None = None) -> dict:
     }
 
 
-def load_feedback_metrics(*, days: int | None = None, range_key: str = "all") -> dict:
-    ensure_feedback_table(FEEDBACK_DB_PATH)
-    with sqlite3.connect(FEEDBACK_DB_PATH) as conn:
+def _load_feedback_metrics_for_path(
+    *,
+    days: int | None = None,
+    range_key: str = "all",
+    feedback_db_path: str | Path | None = None,
+) -> dict:
+    active_feedback_db = str(feedback_db_path or FEEDBACK_DB_PATH)
+    ensure_feedback_table(active_feedback_db)
+    with sqlite3.connect(active_feedback_db) as conn:
         rows = conn.execute(
             """
             SELECT query, generated_sql, reward, execution_time, validation_status, timestamp
@@ -5455,7 +5469,7 @@ def load_feedback_metrics(*, days: int | None = None, range_key: str = "all") ->
     rows = _filter_metrics_by_range(rows, days, lambda row: row[5])
 
     if not rows:
-        telemetry = load_agent_telemetry_metrics(days=days)
+        telemetry = load_agent_telemetry_metrics(days=days, db_path=active_feedback_db)
         telemetry_trend = list(telemetry.get("trend") or [])
         trend = [
             {
@@ -5510,7 +5524,7 @@ def load_feedback_metrics(*, days: int | None = None, range_key: str = "all") ->
             },
         }
 
-    telemetry = load_agent_telemetry_metrics(days=days)
+    telemetry = load_agent_telemetry_metrics(days=days, db_path=active_feedback_db)
     telemetry_trend = list(telemetry.get("trend") or [])
     used_telemetry: set[int] = set()
 
@@ -5616,10 +5630,171 @@ def load_feedback_metrics(*, days: int | None = None, range_key: str = "all") ->
     }
 
 
+def _average_metric(points: list[dict[str, object]], key: str, fallback_key: str | None = None) -> float:
+    values: list[float] = []
+    for point in points:
+        value = point.get(key)
+        if (value is None or value == 0) and fallback_key:
+            value = point.get(fallback_key)
+        try:
+            values.append(float(value or 0.0))
+        except (TypeError, ValueError):
+            continue
+    return round(sum(values) / len(values), 2) if values else 0.0
+
+
+def _merge_agent_telemetry(
+    public: dict[str, object],
+    private: dict[str, object],
+    *,
+    scope: str,
+) -> dict[str, object]:
+    public_points = [
+        {**point, "visibility": "public"}
+        for point in list(public.get("trend") or [])
+    ]
+    private_points = [
+        {**point, "visibility": "confidential"}
+        for point in list(private.get("trend") or [])
+    ]
+    if scope == "public":
+        points = public_points
+    elif scope == "private":
+        points = private_points
+    else:
+        points = public_points + private_points
+    points.sort(key=lambda point: _metric_timestamp_seconds(point.get("timestamp")) or 0.0)
+    enterprise_points = [point for point in points if point.get("complexity") == "ENTERPRISE"]
+    missing = sorted(set(
+        list(public.get("missing_concepts") or [])
+        + list(private.get("missing_concepts") or [])
+    ))[:20]
+    return {
+        "total": len(points),
+        "intent_accuracy": _average_metric(points, "intent_score"),
+        "planner_accuracy": _average_metric(points, "planner_confidence", "entity_score"),
+        "validation_accuracy": _average_metric(points, "validator_confidence", "semantic_score"),
+        "optimization_accuracy": round(
+            (sum(1 for point in points if point.get("valid")) / len(points)) * 100,
+            2,
+        ) if points else 0,
+        "coverage_score": _average_metric(points, "coverage_confidence", "confidence"),
+        "missing_concepts": missing,
+        "fallback_rate": round(
+            (sum(1 for point in points if point.get("fallback_used")) / len(points)) * 100,
+            2,
+        ) if points else 0,
+        "enterprise_success_rate": round(
+            (sum(1 for point in enterprise_points if point.get("valid")) / len(enterprise_points)) * 100,
+            2,
+        ) if enterprise_points else 0,
+        "trend": points[-100:],
+    }
+
+
+def load_feedback_metrics(
+    *,
+    days: int | None = None,
+    range_key: str = "all",
+    scope: str = "public",
+) -> dict:
+    normalized_scope = scope if scope in {"public", "private", "all"} else "public"
+    public_metrics = _load_feedback_metrics_for_path(
+        days=days,
+        range_key=range_key,
+        feedback_db_path=FEEDBACK_DB_PATH,
+    )
+    if normalized_scope == "public":
+        return {
+            **public_metrics,
+            "access_scope": "public",
+            "admin_activity": {
+                "included": False,
+                "public_events": int(public_metrics.get("total") or 0),
+                "private_events": 0,
+            },
+        }
+
+    private_metrics = _load_feedback_metrics_for_path(
+        days=days,
+        range_key=range_key,
+        feedback_db_path=PRIVATE_FEEDBACK_DB_PATH,
+    )
+    public_trend = [
+        {**point, "visibility": "public"}
+        for point in list(public_metrics.get("trend") or [])
+    ]
+    private_trend = [
+        {**point, "visibility": "confidential"}
+        for point in list(private_metrics.get("trend") or [])
+    ]
+    combined = private_trend if normalized_scope == "private" else public_trend + private_trend
+    combined.sort(key=lambda point: _metric_timestamp_seconds(point.get("timestamp")) or 0.0)
+    visible_trend = combined[-100:]
+    valid_events = [point for point in combined if point.get("valid")]
+    successful_events = [
+        point for point in combined
+        if point.get("valid") and float(point.get("reward") or 0.0) > 0
+    ]
+    base = private_metrics if normalized_scope == "private" else public_metrics
+    llm_metrics = dict(base.get("llm_metrics") or {})
+    fallback_rate = round(
+        (sum(1 for point in combined if point.get("fallback_used")) / len(combined)) * 100,
+        2,
+    ) if combined else 0
+    merged_telemetry = _merge_agent_telemetry(
+        dict(public_metrics.get("agent_telemetry") or {}),
+        dict(private_metrics.get("agent_telemetry") or {}),
+        scope=normalized_scope,
+    )
+    return {
+        **base,
+        "total": len(combined),
+        "average_reward": round(
+            sum(float(point.get("reward") or 0.0) for point in combined) / len(combined),
+            2,
+        ) if combined else 0,
+        "query_success_rate": round((len(successful_events) / len(combined)) * 100, 2) if combined else 0,
+        "sql_accuracy": round((len(valid_events) / len(combined)) * 100, 2) if combined else 0,
+        "planner_accuracy": _average_metric(combined, "planner_score"),
+        "validator_precision": _average_metric(combined, "validator_score"),
+        "confidence_reliability": round(
+            sum(
+                float(point.get("confidence") or 0.0)
+                if point.get("valid")
+                else 100 - float(point.get("confidence") or 0.0)
+                for point in combined
+            ) / len(combined),
+            2,
+        ) if combined else 0,
+        "average_latency": round(
+            sum(float(point.get("execution_time") or 0.0) for point in combined) / len(combined),
+            4,
+        ) if combined else 0,
+        "trend": visible_trend,
+        "agent_telemetry": merged_telemetry,
+        "research_metrics": {
+            **dict(base.get("research_metrics") or {}),
+            "fallback_rate": fallback_rate,
+            "five_plus_table_success_rate": merged_telemetry.get("enterprise_success_rate", 0),
+        },
+        "llm_metrics": llm_metrics,
+        "access_scope": normalized_scope,
+        "admin_activity": {
+            "included": True,
+            "public_events": int(public_metrics.get("total") or 0),
+            "private_events": int(private_metrics.get("total") or 0),
+        },
+    }
+
+
 @app.get("/metrics")
 def metrics_api():
     range_key, days = _metrics_range_from_request()
-    return jsonify(load_feedback_metrics(days=days, range_key=range_key))
+    is_admin = str(g.current_user.get("role") or "") == "admin"
+    requested_scope = str(request.args.get("scope") or ("all" if is_admin else "public")).lower()
+    scope = requested_scope if is_admin and requested_scope in {"public", "private", "all"} else "public"
+    return jsonify(load_feedback_metrics(days=days, range_key=range_key, scope=scope))
 
 
 @app.get("/dashboard")

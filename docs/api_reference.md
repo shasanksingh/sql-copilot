@@ -8,7 +8,7 @@ The Flask backend serves the SQL copilot, authentication, schema governance, liv
 | --- | --- | --- |
 | `GET` | `/` | Service metadata and endpoint index |
 | `GET` | `/health` | Backend and loaded-schema health |
-| `GET` | `/metrics` | Authenticated dashboard quality metrics as JSON |
+| `GET` | `/metrics` | Authenticated dashboard quality metrics as JSON; administrators may select isolated activity scopes |
 | `GET` | `/observability/metrics` | Prometheus operational metrics; optional bearer token protection |
 | `GET` | `/legacy` | Static legacy UI |
 | `POST` | `/auth/signup` | Create user, session, and CSRF cookie |
@@ -63,6 +63,8 @@ Unsafe authenticated methods require the `sql_copilot_csrf` cookie value in `X-C
 `POST /sql` remains backward-compatible and now adds optional fields under `insights`: `query_complexity`, `confidence_band`, `provider_status`, `llm_trace`, `model_confidence`, `planner_confidence`, `validator_confidence`, `coverage_confidence`, `fallback_used`, `fallback_reason`, and `repair_attempts`. API keys are never returned.
 
 `GET /observability/metrics` emits Prometheus exposition data rather than chat/session history. It contains aggregate request, latency, validation, cache, provider-readiness, and confidence metrics. If `METRICS_BEARER_TOKEN` is configured, callers must include `Authorization: Bearer <token>`. See [observability.md](observability.md) for the metric contract and Grafana dashboard.
+
+`GET /metrics?range=month&scope=all` includes both public and confidential activity only for an authenticated administrator. Administrators can use `scope=public`, `scope=private`, or `scope=all`. Requests from regular users are always constrained to `scope=public`, even when another scope is supplied. Confidential activity remains in the separate private telemetry database and is marked `visibility: confidential` in administrator responses.
 
 ## Schema Studio Payload
 

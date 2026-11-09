@@ -5,6 +5,9 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from agentic.enterprise_copilot import AgentTelemetryAgent
+from backend.auth import AuthStore
+
 
 class _FakeProvider:
     def metrics(self) -> dict[str, object]:
@@ -76,3 +79,90 @@ def test_feedback_metrics_filters_selected_range(tmp_path: Path, monkeypatch) ->
     assert metrics["range"]["key"] == "month"
     assert metrics["total"] == 1
     assert [point["query"] for point in metrics["trend"]] == ["recent"]
+
+
+def test_admin_metrics_include_isolated_private_activity(tmp_path: Path, monkeypatch) -> None:
+    app_module = importlib.import_module("backend.app")
+    public_db = tmp_path / "public-feedback.sqlite"
+    private_db = tmp_path / "private-feedback.sqlite"
+    app_module.ensure_feedback_table(public_db)
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(public_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO agent_feedback (
+                query, generated_sql, reward, execution_time, validation_status, timestamp
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("public query", "SELECT * FROM clients;", 1, 0.2, "Valid", now),
+        )
+
+    coverage = {
+        key: {"missing": []}
+        for key in ("intent", "entity", "column", "aggregation", "join")
+    }
+    AgentTelemetryAgent(private_db).record(
+        "confidential admin query",
+        True,
+        {
+            "overall": 96,
+            "intent": 98,
+            "entity": 95,
+            "join": 92,
+            "column": 97,
+            "aggregation": 94,
+            "semantic": 100,
+            "planner_confidence": 95,
+            "validator_confidence": 100,
+            "coverage_confidence": 96,
+        },
+        coverage,
+        {"provider": "local", "model": "confidential-planner", "stages": [{"latency_ms": 30}]},
+        "ENTERPRISE",
+    )
+
+    monkeypatch.setattr(app_module, "FEEDBACK_DB_PATH", str(public_db))
+    monkeypatch.setattr(app_module, "PRIVATE_FEEDBACK_DB_PATH", str(private_db))
+    monkeypatch.setattr(app_module, "LLM_PROVIDER_CLIENT", _FakeProvider())
+
+    public_metrics = app_module.load_feedback_metrics(scope="public")
+    assert [point["query"] for point in public_metrics["trend"]] == ["public query"]
+    assert public_metrics["admin_activity"]["private_events"] == 0
+
+    admin_metrics = app_module.load_feedback_metrics(scope="all")
+    assert admin_metrics["total"] == 2
+    assert {point["query"] for point in admin_metrics["trend"]} == {
+        "public query",
+        "confidential admin query",
+    }
+    private_point = next(
+        point for point in admin_metrics["trend"]
+        if point["query"] == "confidential admin query"
+    )
+    assert private_point["visibility"] == "confidential"
+    assert admin_metrics["admin_activity"]["private_events"] == 1
+
+    store = AuthStore(tmp_path / "auth.sqlite")
+    store.create_user("Regular User", "user@example.com", "RegularPass1")
+    store.bootstrap_admin("Administrator", "admin@example.com", "AdministratorPass1")
+    monkeypatch.setattr(app_module, "auth_store", store)
+    app_module.app.config.update(TESTING=True)
+
+    user_client = app_module.app.test_client()
+    assert user_client.post(
+        "/auth/login",
+        json={"email": "user@example.com", "password": "RegularPass1"},
+    ).status_code == 200
+    user_payload = user_client.get("/metrics?range=all&scope=private").get_json()
+    assert user_payload["access_scope"] == "public"
+    assert all(point.get("visibility") != "confidential" for point in user_payload["trend"])
+
+    admin_client = app_module.app.test_client()
+    assert admin_client.post(
+        "/auth/login",
+        json={"email": "admin@example.com", "password": "AdministratorPass1"},
+    ).status_code == 200
+    admin_payload = admin_client.get("/metrics?range=all&scope=all").get_json()
+    assert admin_payload["access_scope"] == "all"
+    assert any(point.get("visibility") == "confidential" for point in admin_payload["trend"])
